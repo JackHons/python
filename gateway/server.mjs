@@ -4,9 +4,17 @@ import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 
 const MUTATION_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+const PORTAL_ROLES = new Map([["/student", "student"], ["/teacher", "teacher"], ["/admin", "admin"]]);
+const VALID_ROLES = new Set(PORTAL_ROLES.values());
 
 function isApiPath(pathname) {
   return pathname === "/api/v1" || pathname.startsWith("/api/v1/");
+}
+
+export function portalRoleForPath(pathname) {
+  const value = String(pathname ?? "");
+  for (const [prefix, role] of PORTAL_ROLES) if (value === prefix || value.startsWith(prefix + "/")) return role;
+  return null;
 }
 
 function headerRecord(headers) {
@@ -26,6 +34,21 @@ function json(res, status, body, requestId) {
   res.end(encoded);
 }
 
+function escapeHtml(value) {
+  return String(value).replace(/[&<>'"]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[character]);
+}
+
+function pageError(res, request, status, code, requestId) {
+  const title = status === 401 ? "Sign in required" : status === 403 ? "Access denied" : "Service unavailable";
+  const message = status === 401 ? "Please sign in to continue." : status === 403 ? "Your account cannot access this page." : "The learning platform is temporarily unavailable.";
+  const returnTo = status === 401 ? `/?returnTo=${encodeURIComponent(new URL(request.url ?? "/", `http://${request.headers.host ?? "gateway"}`).pathname)}` : "/";
+  const body = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>${title}</title></head><body><main><h1>${title}</h1><p>${message}</p>${status === 401 ? `<a href="${escapeHtml(returnTo)}">Go to sign in</a>` : `<a href="/">Return home</a>`}</main></body></html>`;
+  const encoded = Buffer.from(body);
+  res.writeHead(status, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "content-length": encoded.length, "x-request-id": requestId, "x-error-code": code });
+  if (String(request.method ?? "GET").toUpperCase() === "HEAD") return res.end();
+  return res.end(encoded);
+}
+
 function requestPublicOrigin(req) {
   const host = String(req.headers.host ?? "").trim().toLowerCase();
   if (!host || /[\s/\\]/.test(host)) return null;
@@ -40,6 +63,28 @@ function originAllowed(req, allowedOrigins, backendToken) {
   try { parsed = new URL(origin); } catch { return false; }
   const normalized = parsed.origin.toLowerCase();
   return normalized === requestPublicOrigin(req)?.toLowerCase() || allowedOrigins.has(normalized);
+}
+
+function hasSessionCookie(req) {
+  return String(req.headers.cookie ?? "").split(";").some((part) => part.trim().toLowerCase().startsWith("session="));
+}
+
+async function probeSession(req, backendUrl, backendToken, requestId) {
+  if (!hasSessionCookie(req)) return { status: 401, code: "unauthorized" };
+  const headers = new Headers({ accept: "application/json", cookie: String(req.headers.cookie), "x-backend-token": backendToken, "x-request-id": requestId });
+  try {
+    const response = await fetch(`${backendUrl}/api/v1/me`, { method: "GET", headers });
+    if (response.status === 401 || (response.status >= 400 && response.status < 500)) return { status: 401, code: "unauthorized" };
+    if (response.status >= 500) return { status: 503, code: "auth_upstream_unavailable" };
+    if (!response.ok) return { status: 502, code: "auth_upstream_invalid" };
+    let payload;
+    try { payload = await response.json(); } catch { return { status: 502, code: "auth_upstream_invalid" }; }
+    const role = payload?.user?.role;
+    if (!VALID_ROLES.has(role)) return { status: 502, code: "auth_upstream_invalid" };
+    return { status: 200, role };
+  } catch {
+    return { status: 502, code: "auth_upstream_unavailable" };
+  }
 }
 
 export function createGatewayServer(options = {}) {
@@ -69,6 +114,13 @@ export function createGatewayServer(options = {}) {
   const api = isApiPath(incoming.pathname);
   if (api && !originAllowed(req, allowedOrigins, backendToken)) {
     return json(res, 403, { code: "csrf_failed", message: "Same-origin request required" }, requestId);
+  }
+  const method = String(req.method ?? "GET").toUpperCase();
+  const pageRole = !api && (method === "GET" || method === "HEAD") ? portalRoleForPath(incoming.pathname) : null;
+  if (pageRole) {
+    const auth = await probeSession(req, backendUrl, backendToken, requestId);
+    if (auth.status !== 200) return pageError(res, req, auth.status, auth.code, requestId);
+    if (auth.role !== pageRole) return pageError(res, req, 403, "role_forbidden", requestId);
   }
   const upstream = api ? backendUrl : webUrl;
   const target = new URL(incoming.pathname + incoming.search, `${upstream}/`);
