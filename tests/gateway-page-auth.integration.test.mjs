@@ -3,6 +3,7 @@ import http from "node:http";
 import test from "node:test";
 
 const { createGatewayServer, portalRoleForPath } = await import("../gateway/server.mjs");
+const { PORTAL_ROUTES } = await import("../app/lib/portal-routes.ts");
 
 const TOKEN = "gateway-page-auth-internal-token-123456789";
 const SESSION_COOKIE = "session=teacher-session";
@@ -89,6 +90,7 @@ test("role matcher covers static, dynamic and public compatibility page paths", 
     ["/api/v1/me", null],
   ]);
   for (const [pathname, role] of expected) assert.equal(portalRoleForPath(pathname), role, pathname);
+  for (const route of PORTAL_ROUTES) assert.equal(portalRoleForPath(route.path), route.role, route.path);
 });
 
 test("GET and HEAD without a cookie return 401 without probing or forwarding", async () => {
@@ -102,6 +104,9 @@ test("GET and HEAD without a cookie return 401 without probing or forwarding", a
       else assert.match(snapshot.body, /sign in required/i);
       assert.equal(snapshot.headers.get("x-request-id"), `anonymous-${method}`);
     }
+    const queryResponse = await responseSnapshot(await fetch(`${harness.base}/student/courses/course-1?tab=assignments`));
+    assert.equal(queryResponse.status, 401);
+    assert.match(queryResponse.body, /\/?returnTo=%2Fstudent%2Fcourses%2Fcourse-1%3Ftab%3Dassignments/);
     assert.equal(harness.backendCalls.length, 0);
     assert.equal(harness.webCalls.length, 0);
   } finally {
@@ -190,14 +195,14 @@ test("API paths bypass page probe and preserve existing backend forwarding", asy
 test("root, health and compatibility aliases bypass the role guard", async () => {
   const harness = await createHarness();
   try {
-    for (const pathname of ["/", "/dashboard", "/courses", "/classroom"]) {
+    for (const pathname of ["/", "/dashboard", "/courses", "/classroom", "/assets/app.css"]) {
       const response = await fetch(harness.base + pathname);
       assert.equal(response.status, 200, pathname);
     }
     const health = await fetch(harness.base + "/health");
     assert.equal(health.status, 200);
     assert.equal(harness.backendCalls.filter(({ path }) => path === "/api/v1/me").length, 0);
-    assert.equal(harness.webCalls.length, 5);
+    assert.equal(harness.webCalls.length, 6);
   } finally {
     await harness.close();
   }

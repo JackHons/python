@@ -41,7 +41,8 @@ function escapeHtml(value) {
 function pageError(res, request, status, code, requestId) {
   const title = status === 401 ? "Sign in required" : status === 403 ? "Access denied" : "Service unavailable";
   const message = status === 401 ? "Please sign in to continue." : status === 403 ? "Your account cannot access this page." : "The learning platform is temporarily unavailable.";
-  const returnTo = status === 401 ? `/?returnTo=${encodeURIComponent(new URL(request.url ?? "/", `http://${request.headers.host ?? "gateway"}`).pathname)}` : "/";
+  const currentUrl = new URL(request.url ?? "/", `http://${request.headers.host ?? "gateway"}`);
+  const returnTo = status === 401 ? `/?returnTo=${encodeURIComponent(currentUrl.pathname + currentUrl.search)}` : "/";
   const body = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>${title}</title></head><body><main><h1>${title}</h1><p>${message}</p>${status === 401 ? `<a href="${escapeHtml(returnTo)}">Go to sign in</a>` : `<a href="/">Return home</a>`}</main></body></html>`;
   const encoded = Buffer.from(body);
   res.writeHead(status, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "content-length": encoded.length, "x-request-id": requestId, "x-error-code": code });

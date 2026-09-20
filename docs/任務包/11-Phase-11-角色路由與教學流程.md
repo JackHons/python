@@ -21,7 +21,7 @@
 | 管理員 | `/admin/dashboard`、`/admin/users`、`/admin/classes`、`/admin/courses`、`/admin/settings`、`/admin/settings/ai`、`/admin/backups`、`/admin/audit` | admin session；AI provider/key、全校政策、備份與 audit 不向教師／學生投影 |
 | 相容入口 | `/dashboard`、`/courses`、`/classroom` | 保留原 method/body，按已登入角色轉至 canonical；不作跨角色提升 |
 
-目前 Vinext route shell 使用 client session probe 與 API RBAC。未登入頁面會引導至 `/?returnTo=<same-origin-relative>`；錯誤角色在 client guard 顯示 403。這不等於 SSR 在第一個 HTML response 已回 HTTP 403，故本階段只聲明「client/API guard」，不聲明完整 SSR HTTP status guard。canonical 導覽以 `Link`／router 改變網址；URL path 是 course／unit／assignment／submission 選擇的 source of truth。每次 path 改變都會重新從 API hydrate，並以 request generation/cancel guard 防止舊請求覆蓋新頁面。
+目前 Vinext route shell 仍使用 client session probe 與 API RBAC；但 Gateway 已在第一個 HTML response 對 canonical `/student/**`、`/teacher/**`、`/admin/**` 執行 private `/api/v1/me` session probe，未登入回 401、錯誤角色回 403，並保留 same-origin-relative `returnTo`（含 query string）。因此可以聲明 Gateway 的首響 HTTP status guard，不能把它誤稱為 Vinext SSR framework 授權；API RBAC 仍是最終防線。canonical 導覽以 `Link`／router 改變網址；URL path 是 course／unit／assignment／submission 選擇的 source of truth。每次 path 改變都會重新從 API hydrate，並以 request generation/cancel guard 防止舊請求覆蓋新頁面。
 
 ## 3. API method 與相容契約
 
@@ -78,6 +78,6 @@ Migration `0010` 提供版本 backfill；材料 scope、EACCES、未知 DB/runti
 
 ## 9. 保留風險
 
-- Vinext 尚未證明 SSR 第一個 response 的 401/403；API RBAC 為最終防線。
+- Gateway 的第一個 HTML response 已有 401/403 route authorization；Vinext app 本身仍不是 SSR-authenticated，API RBAC 仍為最終防線。真實瀏覽器、其他 OS／CPU 及正式反向代理配置尚未由本階段宣稱完成。
 - 本階段不作 browser 視覺 QA；responsive/a11y 只由 CSS／rendered contract 驗證。
 - 正式 AI vendor、SMTP owner、PPT 教師版面抽查、40 browser tabs、強沙箱、exam/similarity/gamification 仍未放行。
