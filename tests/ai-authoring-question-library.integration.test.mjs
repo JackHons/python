@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { randomBytes } from "node:crypto";
+import { readFileSync } from "node:fs";
 
 const { AiAdminService, AiReviewService, AiService, FakeAiProvider, MasterKeyCipher } = await import("../server/ai.ts");
 const { DomainError } = await import("../server/errors.ts");
@@ -42,6 +43,7 @@ test("AI question authoring requires review, materializes idempotently, and copi
     assert.equal(fixture.db.get("SELECT COUNT(*) AS count FROM questions").count, 0);
     assert.equal(provider.calls.length, 1);
     assert.deepEqual(artifact.content.requiredConcepts, ["for 迴圈", "串列"]);
+    assert.throws(() => review.materializeQuestion(fixture.teacher, artifact.id), (error) => error instanceof DomainError && error.code === "invalid_review_transition");
 
     const replay = await review.generateQuestion(fixture.teacher, fixture.course.id, { requestKey: "author-1", type: "python_code", topic: "不同描述", concepts: [] }, ai);
     assert.equal(replay.id, artifact.id);
@@ -76,10 +78,44 @@ test("AI question authoring requires review, materializes idempotently, and copi
     assert.equal(fixture.db.get("SELECT COUNT(*) AS count FROM test_cases WHERE question_id = ?", [copied.id]).count, 2);
     assert.notEqual(fixture.db.get("SELECT id FROM test_cases WHERE question_id = ? ORDER BY position LIMIT 1", [copied.id]).id, fixture.db.get("SELECT id FROM test_cases WHERE question_id = ? ORDER BY position LIMIT 1", [materialized.question.id]).id);
 
+    let tick = 0;
+    const indexedQuestions = new QuestionService(fixture.db, () => new Date(Date.UTC(2027, 0, 1, 0, 0, tick++)));
+    indexedQuestions.updateQuestion(fixture.teacher, materialized.question.id, { status: "published", sharingScope: "school" });
+    for (let index = 0; index < 31; index += 1) {
+      const noise = indexedQuestions.createQuestion(fixture.teacher, { courseId: fixture.course.id, type: "short_answer", titleZh: `Noise ${index}`, promptZh: "不相關", requiredConceptsJson: ["其他"] });
+      indexedQuestions.updateQuestion(fixture.teacher, noise.id, { status: "published", sharingScope: "school" });
+    }
+    const completeSearch = indexedQuestions.searchLibrary(fixture.teacher, targetCourse.id, { concept: "FOR 迴圈", limit: 10 });
+    assert.equal(completeSearch.some((item) => item.id === materialized.question.id), true);
+
+    const invalidStored = review.create(fixture.teacher, { artifactType: "question", courseId: fixture.course.id, content: { type: "short_answer", titleZh: "不應落地", promptZh: "不應落地", requiredConcepts: [], maxScore: 1, testCases: [{ visibility: "public", expectedOutput: "x" }] } });
+    review.review(fixture.teacher, invalidStored.id, "approved");
+    const questionCountBeforeInvalid = fixture.db.get("SELECT COUNT(*) AS count FROM questions").count;
+    const testCountBeforeInvalid = fixture.db.get("SELECT COUNT(*) AS count FROM test_cases").count;
+    assert.throws(() => review.materializeQuestion(fixture.teacher, invalidStored.id), (error) => error instanceof DomainError && error.code === "ai_question_invalid" && error.status === 502);
+    assert.equal(fixture.db.get("SELECT COUNT(*) AS count FROM questions").count, questionCountBeforeInvalid);
+    assert.equal(fixture.db.get("SELECT COUNT(*) AS count FROM test_cases").count, testCountBeforeInvalid);
+
     const privateQuestion = questions.createQuestion(fixture.teacher, { courseId: fixture.course.id, type: "short_answer", titleZh: "私人題目", promptZh: "私人內容", requiredConceptsJson: ["封閉"] });
     assert.equal(questions.searchLibrary(fixture.teacher, targetCourse.id, { q: "私人題目" }).length, 0);
     assert.throws(() => questions.copyQuestion(fixture.student, materialized.question.id, { targetCourseId: targetCourse.id }), (error) => error instanceof DomainError && error.code === "forbidden");
     assert.ok(privateQuestion.id);
+    const pageSource = readFileSync(new URL("../app/page.tsx", import.meta.url), "utf8");
+    assert.match(pageSource, /materializeAiQuestionArtifact\(selected\.id\)/);
+    assert.match(pageSource, /selected\.artifact_type === "question"/);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("rejected question artifacts cannot be materialized", async () => {
+  const fixture = await makeContentFixture();
+  try {
+    const review = new AiReviewService(fixture.db);
+    const artifact = review.create(fixture.teacher, { artifactType: "question", courseId: fixture.course.id, content: { type: "short_answer", titleZh: "拒絕題目", promptZh: "不可用", requiredConcepts: [], maxScore: 1 } });
+    review.review(fixture.teacher, artifact.id, "rejected");
+    assert.throws(() => review.materializeQuestion(fixture.teacher, artifact.id), (error) => error instanceof DomainError && error.code === "invalid_review_transition");
+    assert.equal(fixture.db.get("SELECT COUNT(*) AS count FROM questions").count, 0);
   } finally {
     await fixture.close();
   }

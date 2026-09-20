@@ -576,19 +576,25 @@ export class QuestionService {
     if (query.length > 200 || concept.length > 80) throw new DomainError("invalid_input", "Question library filters are too long");
     if (filters.type && !QUESTION_TYPES.has(filters.type)) throw new DomainError("invalid_input", "Question type is invalid");
     const limit = Math.max(1, Math.min(100, Number.isSafeInteger(filters.limit) ? Number(filters.limit) : 50));
+    const clauses = ["c.status != 'archived'", "q.status != 'archived'", "(q.course_id = ? OR (q.status = 'published' AND q.sharing_scope = 'school'))"];
+    const params: Array<string | number> = [targetCourseId];
+    if (filters.type) { clauses.push("q.type = ?"); params.push(filters.type); }
+    if (query) {
+      clauses.push("(lower(COALESCE(q.title_zh, '')) LIKE ? OR lower(COALESCE(q.title_en, '')) LIKE ? OR lower(COALESCE(q.prompt_zh, '')) LIKE ? OR lower(COALESCE(q.prompt_en, '')) LIKE ?)");
+      const needle = `%${query.toLocaleLowerCase()}%`;
+      params.push(needle, needle, needle, needle);
+    }
+    if (concept) {
+      clauses.push("EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(q.required_concepts_json) AND json_type(q.required_concepts_json) = 'array' THEN q.required_concepts_json ELSE '[]' END) WHERE lower(trim(CAST(value AS TEXT))) = lower(?))");
+      params.push(concept);
+    }
+    params.push(limit);
     const rows = this.db.all<Record<string, any>>(`SELECT q.id, q.course_id AS source_course_id, c.title_zh AS source_course_title_zh, c.title_en AS source_course_title_en,
       q.type, q.title_zh, q.title_en, q.prompt_zh, q.prompt_en, q.required_concepts_json, q.max_score, q.sharing_scope, q.status, q.updated_at
       FROM questions q JOIN courses c ON c.id = q.course_id
-      WHERE c.status != 'archived' AND q.status != 'archived' AND
-        (q.course_id = ? OR (q.status = 'published' AND q.sharing_scope = 'school'))
-      ORDER BY q.updated_at DESC LIMIT ?`, [targetCourseId, limit * 3]);
-    return rows.filter((row) => {
-      if (filters.type && row.type !== filters.type) return false;
-      const searchable = `${row.title_zh ?? ""} ${row.title_en ?? ""} ${row.prompt_zh ?? ""} ${row.prompt_en ?? ""}`.toLocaleLowerCase();
-      if (query && !searchable.includes(query.toLocaleLowerCase())) return false;
-      if (concept && !normalizeQuestionConcepts(row.required_concepts_json, false).some((item) => item.toLocaleLowerCase() === concept.toLocaleLowerCase())) return false;
-      return true;
-    }).slice(0, limit).map((row) => ({
+      WHERE ${clauses.join(" AND ")}
+      ORDER BY q.updated_at DESC LIMIT ?`, params);
+    return rows.map((row) => ({
       id: row.id, source_course_id: row.source_course_id, source_course_title_zh: row.source_course_title_zh, source_course_title_en: row.source_course_title_en,
       type: row.type, title_zh: row.title_zh, title_en: row.title_en, prompt_zh: row.prompt_zh, prompt_en: row.prompt_en,
       required_concepts_json: normalizeQuestionConcepts(row.required_concepts_json, false), max_score: row.max_score, sharing_scope: row.sharing_scope, status: row.status, updated_at: row.updated_at,

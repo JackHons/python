@@ -533,9 +533,12 @@ export class AiReviewService {
     if ((type === "code_fill" || type === "python_code") && typeof raw.starterCode !== "string") throw new DomainError("ai_question_invalid", "AI code question starterCode is required", 502);
     const maxScore = raw.maxScore === undefined ? input.maxScore ?? 1 : Number(raw.maxScore);
     if (!Number.isFinite(maxScore) || maxScore < 0 || maxScore > 10000) throw new DomainError("ai_question_invalid", "AI question maxScore is invalid", 502);
-    const requiredConcepts = normalizeQuestionConcepts(raw.requiredConcepts ?? input.concepts);
+    let requiredConcepts: string[];
+    try { requiredConcepts = normalizeQuestionConcepts(raw.requiredConcepts ?? input.concepts); }
+    catch { throw new DomainError("ai_question_invalid", "AI question concepts are invalid", 502); }
     const testCases = raw.testCases === undefined ? [] : raw.testCases;
     if (!Array.isArray(testCases) || testCases.length > 100) throw new DomainError("ai_question_invalid", "AI question testCases are invalid", 502);
+    if (!AUTHORING_TYPES.has(type) || !["code_fill", "python_code"].includes(type) && testCases.length > 0) throw new DomainError("ai_question_invalid", "Only code questions may contain test cases", 502);
     const normalizedTests = testCases.map((test: Record<string, any>, index: number) => {
       if (!test || !["public", "hidden"].includes(test.visibility) || typeof test.expectedOutput !== "string" || !test.expectedOutput.trim()) throw new DomainError("ai_question_invalid", `AI test case ${index + 1} is invalid`, 502);
       const comparisonMode = test.comparisonMode ?? "trimmed";
@@ -546,11 +549,16 @@ export class AiReviewService {
         if (!Number.isFinite(result) || result < 0) throw new DomainError("ai_question_invalid", `AI test case ${index + 1} ${label} is invalid`, 502);
         return result;
       };
+      const integer = (value: unknown, fallback: number | null, label: string) => {
+        const result = numeric(value, fallback, label);
+        if (result !== null && !Number.isInteger(result)) throw new DomainError("ai_question_invalid", `AI test case ${index + 1} ${label} must be an integer`, 502);
+        return result;
+      };
       return {
         visibility: test.visibility, label: boundedText(test.label, "test label", 200), inputJson: test.inputJson ?? null,
         expectedOutput: test.expectedOutput.trim(), comparisonMode, tolerance: numeric(test.tolerance, null, "tolerance"),
-        weight: numeric(test.weight, 1, "weight"), position: numeric(test.position, index, "position"),
-        timeLimitMs: numeric(test.timeLimitMs, null, "timeLimitMs"), memoryLimitMb: numeric(test.memoryLimitMb, null, "memoryLimitMb"),
+        weight: numeric(test.weight, 1, "weight"), position: integer(test.position, index, "position"),
+        timeLimitMs: integer(test.timeLimitMs, null, "timeLimitMs"), memoryLimitMb: integer(test.memoryLimitMb, null, "memoryLimitMb"),
       };
     });
     return {
@@ -635,8 +643,14 @@ export class AiReviewService {
     if (artifact.question_id) return { artifact: this.getStaff(actor, id), question: questions.getStaffQuestion(actor, artifact.question_id) };
     if (artifact.status !== "approved") throw new DomainError("invalid_review_transition", "Only approved question artifacts can be materialized", 409);
     const content = parseJson(artifact.content_json, "contentJson") as Record<string, any>;
-    if (content.unitId) {
-      const unit = this.db.get<{ course_id: string; status: string }>("SELECT course_id, status FROM units WHERE id = ?", [content.unitId]);
+    const normalized = this.normalizeQuestionContent(content, {
+      type: typeof content.type === "string" ? content.type : "",
+      concepts: content.requiredConcepts ?? [],
+      maxScore: typeof content.maxScore === "number" ? content.maxScore : undefined,
+      unitId: typeof content.unitId === "string" ? content.unitId : undefined,
+    });
+    if (normalized.unitId) {
+      const unit = this.db.get<{ course_id: string; status: string }>("SELECT course_id, status FROM units WHERE id = ?", [normalized.unitId]);
       if (!unit || unit.course_id !== artifact.course_id || unit.status === "archived") throw new DomainError("invalid_reference", "Question unit and course must match");
     }
     let question: Record<string, any> | null = null;
@@ -644,14 +658,18 @@ export class AiReviewService {
       const current = this.db.get<{ question_id: string | null }>("SELECT question_id FROM ai_artifacts WHERE id = ?", [id]);
       if (current?.question_id) { question = questions.getStaffQuestion(actor, current.question_id); return; }
       const created = questions.createQuestion(actor, {
-        courseId: artifact.course_id, unitId: content.unitId ?? undefined, type: content.type, titleZh: content.titleZh, titleEn: content.titleEn ?? undefined,
-        promptZh: content.promptZh, promptEn: content.promptEn ?? undefined, optionsJson: content.optionsJson, answerKeyJson: content.answerKeyJson,
-        explanationZh: content.explanationZh ?? undefined, explanationEn: content.explanationEn ?? undefined, starterCode: content.starterCode ?? undefined,
-        solutionCode: content.solutionCode ?? undefined, requiredConceptsJson: content.requiredConcepts, maxScore: content.maxScore,
+        courseId: artifact.course_id, unitId: normalized.unitId ?? undefined, type: normalized.type, titleZh: normalized.titleZh ?? "", titleEn: normalized.titleEn ?? undefined,
+        promptZh: normalized.promptZh ?? "", promptEn: normalized.promptEn ?? undefined, optionsJson: normalized.optionsJson, answerKeyJson: normalized.answerKeyJson,
+        explanationZh: normalized.explanationZh ?? undefined, explanationEn: normalized.explanationEn ?? undefined, starterCode: normalized.starterCode ?? undefined,
+        solutionCode: normalized.solutionCode ?? undefined, requiredConceptsJson: normalized.requiredConcepts, maxScore: normalized.maxScore,
       });
       if (!created) throw new DomainError("internal_error", "Materialized question was not created", 500);
       question = created;
-      for (const test of content.testCases ?? []) questions.addTestCase(actor, (question as Record<string, any>).id, test);
+      for (const test of normalized.testCases ?? []) questions.addTestCase(actor, (question as Record<string, any>).id, {
+        visibility: test.visibility, label: test.label ?? undefined, inputJson: test.inputJson, expectedOutput: test.expectedOutput,
+        comparisonMode: test.comparisonMode as "exact" | "trimmed" | "numeric_tolerance", tolerance: test.tolerance ?? undefined,
+        weight: test.weight ?? undefined, position: test.position ?? undefined, timeLimitMs: test.timeLimitMs ?? undefined, memoryLimitMb: test.memoryLimitMb ?? undefined,
+      });
       const time = iso(this.clock);
       this.db.run("UPDATE ai_artifacts SET question_id = ?, status = 'published', published_at = ?, updated_at = ? WHERE id = ? AND question_id IS NULL", [(question as Record<string, any>).id, time, time, id]);
       audit(this.db, actor.id, "ai.question_materialized", "ai_artifact", id, "success", { questionId: (question as Record<string, any>).id });
