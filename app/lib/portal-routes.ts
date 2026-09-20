@@ -17,6 +17,7 @@ export const PORTAL_ROUTES: PortalRoute[] = [
   { path: "/teacher/courses", role: "teacher", labelZh: "課程內容", labelEn: "Courses", section: "content" },
   { path: "/teacher/classes", role: "teacher", labelZh: "班別學生", labelEn: "Classes", section: "classes" },
   { path: "/teacher/announcements", role: "teacher", labelZh: "公告通知", labelEn: "Announcements", section: "announcements" },
+  { path: "/teacher/exports", role: "teacher", labelZh: "匯出中心", labelEn: "Export centre", section: "exports" },
   { path: "/teacher/classrooms", role: "teacher", labelZh: "即時課堂", labelEn: "Live classrooms", section: "classrooms" },
   { path: "/teacher/analytics", role: "teacher", labelZh: "學習分析", labelEn: "Analytics", section: "dashboard" },
   { path: "/teacher/analytics/ai", role: "teacher", labelZh: "AI 用量分析", labelEn: "AI analytics", section: "analytics-ai" },

@@ -72,7 +72,31 @@ export type ClassroomStateDto = {
   events: Array<{ id: string; version: number; eventType?: string; event_type?: string; createdAt?: string }>;
 };
 export type ClassroomEventsDto = { serverVersion: number; events: ClassroomStateDto["events"] };
-export type ExportJobDto = { id: string; report_type: string; format: "xlsx" | "pdf" | "csv"; status: string; snapshot_at: string; byte_size: number | null; sha256: string | null; error_code: string | null; created_at: string };
+export type ExportReportType = "overview" | "questionAccuracy" | "commonErrors" | "aiUsage" | "codeHistory" | "learningTime" | "compareCourses";
+export type ExportFormat = "xlsx" | "pdf" | "csv";
+export type ExportStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
+export type ExportJobDto = {
+  id: string;
+  requested_by_id: string;
+  report_type: ExportReportType;
+  format: ExportFormat;
+  scope_json: string;
+  filter_json: string;
+  snapshot_at: string;
+  timezone: string;
+  report_version: string;
+  status: ExportStatus;
+  correlation_id: string | null;
+  expires_at: string | null;
+  attempt_count: number;
+  started_at: string | null;
+  error_code: string | null;
+  finished_at: string | null;
+  sha256: string | null;
+  byte_size: number | null;
+  created_at: string;
+  deleted_at: string | null;
+};
 export type EmailSettingsDto = { enabled: boolean; configured: boolean; host: string; port: number; tlsMode: "none" | "starttls" | "tls"; username: string; from: string; passwordConfigured: boolean };
 export type EmailDeliveryDto = { id: string; notification_id: string; recipient_email: string; status: string; attempt_count: number; next_attempt_at: string | null; last_error_code: string | null; created_at: string; sent_at: string | null };
 export type BackupDto = { id: string; trigger: string; scope: string; status: string; checksum: string | null; byte_size: number | null; created_at: string; verified_at: string | null };
@@ -167,8 +191,9 @@ export const learningApi = {
   transitionClassroomActivity: (activityId: string, transition: "start" | "pause" | "lock" | "reopen" | "end") => apiFetch<{ classroom: ClassroomStateDto }>("/activities/" + encodeURIComponent(activityId) + "/transition", { method: "POST", body: JSON.stringify({ transition, idempotencyKey: crypto.randomUUID() }) }),
   endClassroom: (sessionId: string) => apiFetch<{ classroom: ClassroomStateDto }>("/classrooms/" + encodeURIComponent(sessionId) + "/end", { method: "POST", body: JSON.stringify({ idempotencyKey: crypto.randomUUID() }) }),
   exports: () => apiFetch<{ jobs: ExportJobDto[] }>("/exports"),
-  createExport: (reportType: string, format: "xlsx" | "pdf" | "csv", courseId?: string) => apiFetch<{ job: ExportJobDto }>("/exports", { method: "POST", body: JSON.stringify({ reportType, format, filters: courseId ? { courseId } : {} }) }),
+  createExport: (reportType: ExportReportType, format: ExportFormat, courseId?: string) => apiFetch<{ job: ExportJobDto }>("/exports", { method: "POST", body: JSON.stringify({ reportType, format, filters: courseId ? { courseId } : {} }) }),
   runExport: (exportId: string) => apiFetch<{ job: ExportJobDto }>("/exports/" + encodeURIComponent(exportId) + "/run", { method: "POST", body: "{}" }),
+  retryExport: (exportId: string) => apiFetch<{ job: ExportJobDto }>("/exports/" + encodeURIComponent(exportId) + "/retry", { method: "POST", body: "{}" }),
   exportDownloadUrl: (exportId: string) => "/api/v1/exports/" + encodeURIComponent(exportId) + "/download",
   emailSettings: () => apiFetch<{ settings: EmailSettingsDto }>("/admin/email/settings"),
   updateEmailSettings: (body: Record<string, unknown>) => apiFetch<{ settings: EmailSettingsDto }>("/admin/email/settings", { method: "PATCH", body: JSON.stringify(body) }),
