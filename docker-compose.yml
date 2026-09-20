@@ -142,6 +142,7 @@ services:
       BACKEND_PORT: "8787"
       BACKEND_HOST: 0.0.0.0
       BACKEND_INTERNAL_TOKEN: "${BACKEND_INTERNAL_TOKEN:?Set BACKEND_INTERNAL_TOKEN (24+ chars) in .env}"
+      SESSION_COOKIE_SECURE: "${SESSION_COOKIE_SECURE:-true}"
       DATABASE_PATH: /data/db/learning.sqlite
       STORAGE_ROOT: /data/storage
       EXPORT_STORAGE_ROOT: /data/exports

@@ -45,6 +45,7 @@ export type BackendOptions = {
   runnerToken?: string;
   internalToken?: string;
   production?: boolean;
+  sessionCookieSecure?: boolean;
   csrfRequired?: boolean;
   aiMasterKey?: string;
   aiProvider?: AiProvider;
@@ -131,15 +132,22 @@ function educationPath(request: Request, path: string) {
   mapped.search = original.search;
   return new Request(mapped, request);
 }
-function withSecureCookie(response: Response, production: boolean) {
+function parseBooleanEnv(value: string | undefined, fallback: boolean, name: string) {
+  if (value === undefined || value === "") return fallback;
+  if (value === "true") return true;
+  if (value === "false") return false;
+  throw new Error(`${name} must be true or false`);
+}
+function withSecureCookie(response: Response, secure: boolean) {
   const headers = new Headers(response.headers);
   const value = headers.get("set-cookie");
-  if (value && production && !/;\s*Secure/i.test(value)) headers.set("set-cookie", value + "; Secure");
+  if (value && secure && !/;\s*Secure/i.test(value)) headers.set("set-cookie", value + "; Secure");
   return new Response(response.body, { status: response.status, headers });
 }
 
 export function createBackendApp(options: BackendOptions = {}) {
   const production = options.production ?? process.env.NODE_ENV === "production";
+  const sessionCookieSecure = options.sessionCookieSecure ?? parseBooleanEnv(process.env.SESSION_COOKIE_SECURE, production, "SESSION_COOKIE_SECURE");
   const csrfRequired = options.csrfRequired !== false;
   const internalToken = options.internalToken ?? process.env.BACKEND_INTERNAL_TOKEN ?? "";
   if (production && internalToken.length < MIN_INTERNAL_TOKEN_LENGTH) {
@@ -205,7 +213,7 @@ export function createBackendApp(options: BackendOptions = {}) {
         if (!passwordOpenRoute) assertPasswordReady(actorOf(request, education));
         const mapped = p.join("/") === "auth/change-password" ? "auth/password" : p.join("/");
         const response = await handleEducationApi(educationPath(request, mapped), { service: education });
-        const secured = withSecureCookie(response, production);
+        const secured = withSecureCookie(response, sessionCookieSecure);
         secured.headers.set("x-request-id", requestId);
         if (method === "PUT" && ["classes", "courses", "units"].includes(p[0] ?? "") && p.length === 2) {
           for (const [name, value] of Object.entries(legacyHeaders(requestId, `/api/v1/${p[0]}/${p[1]}`))) secured.headers.set(name, value);

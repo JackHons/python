@@ -356,7 +356,7 @@ async function main(options) {
     compose,
     [
       "set -eu",
-      ...DATA_DIRECTORIES.map((directory) => `entry=$(find /data/${directory} -mindepth 1 -print -quit); if [ -n \"$entry\" ]; then printf 'NON_EMPTY:%s\\n' '/data/${directory}'; exit 7; fi`),
+      ...DATA_DIRECTORIES.map((directory) => `entry=$(find /data/${directory} -mindepth 1 -print -quit); if [ -n "$entry" ]; then printf 'NON_EMPTY:%s\\n' '/data/${directory}'; exit 7; fi`),
     ].join("; "),
     "empty-volume check",
   );
@@ -379,7 +379,7 @@ async function main(options) {
     compose,
     [
       "set -eu",
-      ...DATA_DIRECTORIES.map((directory) => `bad=$(find /data/${directory} -xdev -not -uid 1000 -print -quit); if [ -n \"$bad\" ]; then printf 'BAD_OWNER:%s\\n' \"$bad\"; exit 8; fi`),
+      ...DATA_DIRECTORIES.map((directory) => `bad=$(find /data/${directory} -xdev -not -uid 1000 -print -quit); if [ -n "$bad" ]; then printf 'BAD_OWNER:%s\\n' "$bad"; exit 8; fi`),
     ].join("; "),
     "ownership check",
   );

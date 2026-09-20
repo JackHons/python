@@ -56,6 +56,39 @@ test("backend enforces internal token, same-origin mutation and session role", a
   app.close();
 });
 
+test("session cookie Secure policy keeps production safe and permits explicit local HTTP override", async () => {
+  const productionApp = createBackendApp({ internalToken: "internal-test-token-1234567890", production: true, sessionCookieSecure: true });
+  const productionAdmin = productionApp.services.education.createInitialAdmin({ username: "cookie-production", chineseName: "管理員" });
+  const productionLogin = await productionApp.handle(request("/auth/login", { method: "POST", body: JSON.stringify({ username: "cookie-production", password: productionAdmin.initialPassword }), headers: { "content-type": "application/json" } }));
+  const productionCookie = productionLogin.headers.get("set-cookie") ?? "";
+  assert.match(productionCookie, /HttpOnly/);
+  assert.match(productionCookie, /SameSite=Lax/);
+  assert.match(productionCookie, /Path=\//);
+  assert.match(productionCookie, /Secure/);
+  productionApp.close();
+
+  const localApp = createBackendApp({ internalToken: "internal-test-token-1234567890", production: true, sessionCookieSecure: false });
+  const localAdmin = localApp.services.education.createInitialAdmin({ username: "cookie-local", chineseName: "管理員" });
+  const localLogin = await localApp.handle(request("/auth/login", { method: "POST", body: JSON.stringify({ username: "cookie-local", password: localAdmin.initialPassword }), headers: { "content-type": "application/json" } }));
+  const localCookie = localLogin.headers.get("set-cookie") ?? "";
+  assert.match(localCookie, /HttpOnly/);
+  assert.match(localCookie, /SameSite=Lax/);
+  assert.match(localCookie, /Path=\//);
+  assert.doesNotMatch(localCookie, /Secure/);
+  localApp.close();
+});
+
+test("invalid session cookie Secure policy fails closed", () => {
+  const previous = process.env.SESSION_COOKIE_SECURE;
+  process.env.SESSION_COOKIE_SECURE = "invalid";
+  try {
+    assert.throws(() => createBackendApp({ internalToken: "internal-test-token-1234567890", production: false }), /SESSION_COOKIE_SECURE/);
+  } finally {
+    if (previous === undefined) delete process.env.SESSION_COOKIE_SECURE;
+    else process.env.SESSION_COOKIE_SECURE = previous;
+  }
+});
+
 test("protected route matrix fails closed without a session and never exposes secrets", async () => {
   const app = createBackendApp({ internalToken: "internal-test-token-1234567890", csrfRequired: true });
   app.services.education.createInitialAdmin({ username: "admin", chineseName: "管理員" });
