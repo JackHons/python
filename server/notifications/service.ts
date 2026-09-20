@@ -212,7 +212,7 @@ export class NotificationService {
   publishAnnouncement(actor: Actor, announcementId: string, eventKeyOrOptions: string | { sendEmail?: boolean } = `announcement:${announcementId}:published`, options: { sendEmail?: boolean } = {}) {
     staff(actor);
     const announcement = requireRow<Record<string, any>>(this.db.get("SELECT * FROM announcements WHERE id = ?", [announcementId]), "Announcement not found");
-    if ((announcement.course_id && !this.canManageCourse(actor, announcement.course_id)) || (announcement.class_id && !this.canManageClass(actor, announcement.class_id))) throw new DomainError("forbidden", "You cannot publish this announcement", 403);
+    if (!this.canManageAnnouncement(actor, announcement)) throw new DomainError("not_found", "Announcement not found", 404);
     if (announcement.status === "archived") throw new DomainError("invalid_announcement_state", "Archived announcements cannot be published");
     const eventKey = typeof eventKeyOrOptions === "string" ? eventKeyOrOptions : `announcement:${announcementId}:published`;
     const publishOptions = typeof eventKeyOrOptions === "string" ? options : eventKeyOrOptions;
