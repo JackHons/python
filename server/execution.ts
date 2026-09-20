@@ -268,6 +268,10 @@ export class ExecutionService {
 
   async grade(actor: Actor, answerId: string, code: string, options: { timeoutMs?: number; pastedCharacterCount?: number } = {}) {
     const answer = this.assertAnswerScope(actor, this.answer(answerId) ?? (() => { throw new DomainError("not_found", "Submission answer not found", 404); })());
+    const lock = this.db.get<{ submission_status: string; grade_status: string | null }>("SELECT s.status AS submission_status, g.status AS grade_status FROM submissions s LEFT JOIN grades g ON g.submission_id = s.id WHERE s.id = ?", [answer.submission_id]);
+    if (!lock || lock.submission_status !== "draft" || lock.grade_status === "released") {
+      throw new DomainError("submission_locked", "Automatic grading is only available for draft submissions", 409);
+    }
     assertAssignmentSubmissionOpen(this.db, answer.assignment_id);
     const snapshot = this.snapshotForAnswer(answer);
     if (snapshot.testCases.length === 0) throw new DomainError("invalid_input", "The code question has no test cases");

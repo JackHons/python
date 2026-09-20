@@ -20,6 +20,18 @@ async function createTwoQuestionAssignment(fixture) {
   return { questions, assignments, code, short, assignment };
 }
 
+function gradingState(fixture, submissionId, answerId) {
+  return {
+    submission: fixture.db.get("SELECT status FROM submissions WHERE id = ?", [submissionId]),
+    answer: fixture.db.get("SELECT auto_score, teacher_score, final_score, teacher_feedback, review_status FROM submission_answers WHERE id = ?", [answerId]),
+    grade: fixture.db.get("SELECT auto_score, final_score, max_score, status FROM grades WHERE submission_id = ?", [submissionId]),
+  };
+}
+
+function isSubmissionLocked(error) {
+  return error?.code === "submission_locked" && error?.status === 409;
+}
+
 test("teacher grading keeps multi-question state incomplete until every answer is confirmed", async () => {
   const fixture = await makeContentFixture();
   try {
@@ -45,6 +57,10 @@ test("teacher grading keeps multi-question state incomplete until every answer i
     const staffSubmitted = assignments.getSubmission(fixture.teacher, started.id);
     assert.deepEqual(staffSubmitted.answers.map((answer) => answer.reviewStatus), ["pending", "pending"]);
 
+    const submittedState = gradingState(fixture, started.id, codeAnswer.id);
+    await assert.rejects(() => execution.grade(fixture.student, codeAnswer.id, "print('after submit')"), isSubmissionLocked);
+    assert.deepEqual(gradingState(fixture, started.id, codeAnswer.id), submittedState);
+
     assert.throws(() => assignments.releaseGrade(fixture.teacher, started.id), (error) => error?.code === "grade_not_ready" && error?.status === 409);
     assert.throws(() => assignments.grade(fixture.student, started.id, { questionId: code.id, score: 1 }), (error) => error?.status === 403);
     assert.throws(() => assignments.grade(fixture.teacher, started.id, { questionId: code.id, score: Number.NaN }), (error) => error?.code === "invalid_input");
@@ -55,6 +71,9 @@ test("teacher grading keeps multi-question state incomplete until every answer i
     assert.equal(first.gradeStatus, "review_required");
     assert.equal(first.answers.find((answer) => answer.questionId === code.id).reviewStatus, "confirmed");
     assert.equal(first.answers.find((answer) => answer.questionId === short.id).reviewStatus, "pending");
+    const partiallyGradedState = gradingState(fixture, started.id, codeAnswer.id);
+    await assert.rejects(() => execution.grade(fixture.student, codeAnswer.id, "print('after teacher grading')"), isSubmissionLocked);
+    assert.deepEqual(gradingState(fixture, started.id, codeAnswer.id), partiallyGradedState);
     assert.throws(() => assignments.releaseGrade(fixture.teacher, started.id), (error) => error?.status === 409);
 
     const complete = assignments.grade(fixture.teacher, started.id, { questionId: short.id, score: 4, feedback: "回答完整" });
@@ -66,6 +85,9 @@ test("teacher grading keeps multi-question state incomplete until every answer i
     assert.equal(fixture.db.get("SELECT status FROM submissions WHERE id = ?", [started.id]).status, "returned");
     const releaseAgain = assignments.releaseGrade(fixture.teacher, started.id);
     assert.equal(releaseAgain.status, "released");
+    const releasedState = gradingState(fixture, started.id, codeAnswer.id);
+    await assert.rejects(() => execution.grade(fixture.student, codeAnswer.id, "print('after release')"), isSubmissionLocked);
+    assert.deepEqual(gradingState(fixture, started.id, codeAnswer.id), releasedState);
     assert.throws(() => assignments.grade(fixture.teacher, started.id, { questionId: code.id, score: 8 }), (error) => error?.code === "grade_locked" && error?.status === 409);
 
     const draft = assignments.beginSubmission(fixture.student, assignment.id);
