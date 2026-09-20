@@ -44,6 +44,7 @@ test("canonical role routes are real files with stable deep-link contracts", asy
   assert.match(page, /function StudentNotifications/);
   assert.match(page, /learningApi\.markNotificationRead/);
   assert.match(page, /announcements: "\/teacher\/announcements"/);
+  assert.match(page, /exports: "\/teacher\/exports"/);
   assert.match(page, /canonicalNotificationPath/);
   assert.match(page, /updateEmailSettings/);
   assert.match(page, /cancelEmail/);

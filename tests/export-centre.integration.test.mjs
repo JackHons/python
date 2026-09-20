@@ -26,6 +26,16 @@ test("export service enforces current scope, state transitions, expiry, and boun
     assert.equal(completed.attempt_count, 1);
     assert.equal((await exports.runJob(fixture.teacher, queued.id)).status, "completed");
     assert.throws(() => exports.retryJob(fixture.teacher, queued.id), { code: "invalid_export_state" });
+    await assert.rejects(() => exports.runJob(fixture.student, queued.id), { code: "forbidden", status: 403 });
+    assert.throws(() => exports.retryJob(fixture.student, queued.id), { code: "forbidden", status: 403 });
+    await assert.rejects(() => exports.download(fixture.student, queued.id), { code: "forbidden", status: 403 });
+
+    fixture.db.run("UPDATE courses SET title_zh = ? WHERE id = ?", ['=CMD(1), "quoted"', fixture.course.id]);
+    const csvSafe = exports.createJob(fixture.teacher, { reportType: "overview", format: "csv", filters: { courseId: fixture.course.id } });
+    await exports.runJob(fixture.teacher, csvSafe.id);
+    const csvText = new TextDecoder().decode((await exports.download(fixture.teacher, csvSafe.id)).bytes);
+    assert.match(csvText, /'=CMD\(1\), ""quoted""/);
+    assert.doesNotMatch(csvText, /"=CMD\(1\)/);
 
     const failed = exports.createJob(fixture.teacher, { reportType: "overview", format: "csv", filters: { courseId: fixture.course.id } });
     fixture.db.run("UPDATE export_jobs SET data_snapshot_json = ? WHERE id = ?", ["not-json", failed.id]);
@@ -38,6 +48,7 @@ test("export service enforces current scope, state transitions, expiry, and boun
     const running = exports.createJob(fixture.teacher, { reportType: "overview", format: "csv", filters: { courseId: fixture.course.id } });
     fixture.db.run("UPDATE export_jobs SET status = 'running' WHERE id = ?", [running.id]);
     await assert.rejects(() => exports.runJob(fixture.teacher, running.id), { code: "invalid_export_state" });
+    assert.throws(() => exports.retryJob(fixture.teacher, running.id), { code: "invalid_export_state" });
     const cancelled = exports.createJob(fixture.teacher, { reportType: "overview", format: "csv", filters: { courseId: fixture.course.id } });
     fixture.db.run("UPDATE export_jobs SET status = 'cancelled' WHERE id = ?", [cancelled.id]);
     assert.throws(() => exports.retryJob(fixture.teacher, cancelled.id), { code: "invalid_export_state" });
