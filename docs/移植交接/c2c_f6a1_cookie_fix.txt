@@ -8,8 +8,7 @@ Scope: verify the ChatGPT-reviewed remediation for local HTTP functional testing
 - `SESSION_COOKIE_SECURE` is explicit and validated as `true` or `false`.
 - Production defaults to `true`; the documented local HTTP Compose smoke test sets it to `false`.
 - Production/HTTPS cookies retain `Secure`, `HttpOnly`, `SameSite=Lax`, and `Path=/`.
-- The Windows npm scripts no longer rely on Unix-only inline environment assignment, so `npm run build`/`npm test` are runnable on this host.
-- The pre-existing lint blockers in `scripts/migration/restore-compose.mjs` were removed without changing the generated shell commands.
+- The unrelated Windows npm-script and migration-lint cleanups were excluded from this bounded remediation; they remain separate follow-up work.
 
 ## Checks
 

@@ -41,3 +41,16 @@ Cleanup
 Limits
 - Full three-role author → publish → Runner → submit → teacher release → student result flow was not completed in this run because the delegated worker hung before producing its final result.
 - Browser visual, responsive, accessibility, device, formal provider, and public deployment validation remain outside this evidence.
+
+## Follow-up after the session-cookie remediation
+
+Date: 2026-09-21
+
+- The local HTTP policy is implemented in commit `a639f71`; the reproducible gateway harness is `scripts/phase11-gateway-functional.mjs`.
+- A fresh isolated Compose project `phase11-c2c-f6a1-final` used fresh database/storage/export/backup volumes and reached healthy status for all six services.
+- The final flow passed end to end: admin first-login password change; teacher/student creation and first-login password changes; class/course/unit/material/question/assignment creation and publication; student discovery; real Backend-to-Compose-Runner grading; submission; teacher grading and release; student released result; XLSX export; admin backup creation and verification; admin audit read; wrong-role 403; evil Origin 403; unsupported method 405 with Allow; backend/gateway restart; relogin and persisted course/submission/result.
+- Export payload was 18,285 bytes. Hidden test canary was absent from execution and released-result responses.
+- The final harness output was `PASS` with `backupAndAudit=true`, `csrfBoundary=true`, `wrongRoleBoundary=true`, `methodBoundary=true`, and `restartPersistence=true`.
+- Docker Desktop Compose BuildKit returned an engine header error while attempting a parallel rebuild. A direct backend image build completed successfully, and the final test ran on the rebuilt backend plus the previously verified service images. This is retained as an infrastructure caveat, not claimed as a clean six-image rebuild.
+
+The external validation limits above remain: real PPTX fixture, Python runtime matrix, UI/device/accessibility, formal AI provider, formal SMTP/domain/TLS, strong sandbox/runner isolation, and public production deployment were not claimed.

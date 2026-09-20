@@ -25,6 +25,8 @@ docker compose up -d
 sh scripts/smoke-test-compose.sh
 ```
 
+`create-local-env.mjs` 產生的是本地純 HTTP 測試設定，會明確寫入 `SESSION_COOKIE_SECURE=false` 以讓瀏覽器保存 session；正式環境或 HTTPS 入口請改用 `SESSION_COOKIE_SECURE=true`。
+
 `docker compose down` 預設不刪除 volumes。若要進行破壞性清理，必須由管理員明確執行 `docker compose down -v` 並先保存備份。
 
 本地管理員使用 `LOCAL_ADMIN_CONFIRM=PROVISION_LOCAL_ADMIN node scripts/provision-local-admin.mjs` 建立，或加 `--rotate` 輪替 `admin-local`。隨機初始密碼只寫入 `.local-secrets/admin.json`（0600、首次登入必須改密碼），不會印到 stdout；`.local-secrets/` 不會進入 git 或 Docker image。此命令也會封存 Phase 8 load fixture 帳戶並撤銷 sessions，但保留其學習資料與 volumes。

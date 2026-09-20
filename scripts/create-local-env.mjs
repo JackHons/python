@@ -7,6 +7,7 @@ const contents = [
   "BACKEND_INTERNAL_TOKEN=" + token(),
   "RUNNER_SERVICE_TOKEN=" + token(),
   "AI_MASTER_KEY=" + randomBytes(32).toString("base64"),
+  "SESSION_COOKIE_SECURE=false",
   "ALLOW_LEGACY_RUN=false",
   "NEXT_PUBLIC_DEMO_MODE=false",
   "WEB_PORT=3000",
