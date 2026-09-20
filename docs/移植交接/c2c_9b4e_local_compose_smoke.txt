@@ -1,0 +1,58 @@
+C2C task: c2c_9b4e
+Stage: isolated local Compose deployment and authenticated smoke
+Date: 2026-09-20
+
+PRECHECK:
+- Docker client/server: 29.6.2, Linux amd64
+- Docker Compose: v5.3.1
+- Isolated Compose config: PASS
+
+ISOLATION:
+- Compose project: phase11-c2c-9b4e
+- Gateway test port: 3331
+- Temporary environment file used; existing repository .env was not read or used.
+- Isolated volumes retained for review; no -v cleanup was performed.
+- No product-code, schema, migration, live-volume, merge, tag, or push change.
+
+BUILD:
+- runner: PASS
+- backend: PASS
+- web: PASS
+- converter: PASS
+- email-worker: PASS
+- gateway: PASS
+
+SERVICE HEALTH:
+- backend: running / healthy / not host-published
+- converter: running / healthy / not host-published
+- email-worker: running / healthy / not host-published
+- gateway: running / healthy / host-published only on 3331
+- runner: running / healthy / not host-published
+- web: running / healthy / not host-published
+
+BASE SMOKE:
+- gateway /health: HTTP 200, status ok
+- unauthenticated /api/v1/me: HTTP 401
+- backend /ready: status ok, database ok, foreignKeys=1
+- production legacy /api/run: HTTP 404
+- direct Runner numpy/pandas/matplotlib execution: PASS, exit code 0
+
+AUTHENTICATED SMOKE:
+- admin login, forced password change, relogin, role, admin routes, admin status and audit: PASS
+- admin backup list, enable, database backup create, verify, disable: PASS
+- teacher creation, first login/password change/relogin, role, route and course read: PASS
+- teacher admin-backup authorization: HTTP 403
+- student demo login, role and route: PASS
+- student demo course, unit, published material and assignment discovery: PASS
+- student submission create, real backend-to-Runner Python grading, and submit: PASS
+- student admin-backup authorization: HTTP 403
+
+BOUNDARIES:
+- HTML route HTTP 200 was treated as route reachability only, not SSR role-authorization evidence.
+- No password, token, AI key, or credential value is included in this evidence.
+
+CLEANUP:
+- `docker compose -p phase11-c2c-9b4e down` completed successfully without `-v`.
+- Containers remaining for this project: 0.
+- Isolated named volumes retained: 4 (database, storage, exports, backups).
+- No other Compose project was targeted.

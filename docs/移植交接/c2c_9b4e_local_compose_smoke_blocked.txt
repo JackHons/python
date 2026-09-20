@@ -1,0 +1,65 @@
+Phase 11 C2C local Compose smoke evidence
+Date: 2026-09-20
+Task: c2c_9b4e
+Iteration: 2
+Status: BLOCKED — authenticated smoke intentionally stopped at user request
+
+Scope and safety
+- Compose project: phase11-c2c-9b4e
+- Host port: 3331
+- Temporary env used only for this isolated project; existing repo .env was not read or changed.
+- Existing/live Compose project and volumes were not used.
+- Product source, schema/migrations, Runner architecture, merge/tag/push were not changed.
+- Credentials, cookies, backend/runner tokens, AI key, and passwords are not present in this evidence.
+- compose down was NOT run. The isolated project and volumes remain for inspection.
+
+Completed successfully
+1. Isolated Compose config:
+   - docker compose -p phase11-c2c-9b4e --env-file <OS-temp-env> config --quiet
+   - PASS
+2. Sequential image builds, stopped-on-first-failure policy:
+   - runner: PASS / exit 0
+   - backend: PASS / exit 0
+   - web: PASS / exit 0
+   - converter: PASS / exit 0
+   - email-worker: PASS / exit 0
+   - gateway: PASS / exit 0
+3. Startup:
+   - docker compose ... up -d --no-build
+   - PASS
+   - six containers created in the isolated project.
+4. Service health and port boundary:
+   - backend: running / healthy
+   - converter: running / healthy
+   - email-worker: running / healthy
+   - gateway: running / healthy; only published host port 3331 -> container 3000
+   - runner: running / healthy
+   - web: running / healthy
+   - runner/backend/web/converter/email-worker have no host-published ports.
+5. Base smoke:
+   - gateway GET /health: HTTP 200
+   - unauthenticated GET /api/v1/me: HTTP 401
+   - backend GET /ready: HTTP 200; database ok, storage configured, foreignKeys=1
+   - legacy GET /api/run: HTTP 404
+   - real Runner HTTP execution: PASS; numpy/pandas/matplotlib code executed successfully.
+6. Isolated provisioning:
+   - local admin provisioning: PASS; secret written locally only.
+   - student demo provisioning: PASS; secret written locally only.
+   - No credential contents were printed or recorded.
+
+Authenticated smoke stopping point
+- Corrected same-origin harness reached:
+  - admin initial login: PASS
+  - admin first-login password change: PASS
+  - admin relogin: PASS
+  - admin role from /api/v1/me: PASS
+- First harness attempt without browser Origin was rejected by gateway CSRF guard with HTTP 403; this was a harness defect, corrected by sending the same-origin Origin header.
+- The next HTML route probe using Node fetch hit a client-side TypeError: terminated while decoding gateway-proxied compressed HTML. All six containers remained healthy. The harness was changed to read HTML route status only, without decoding the body.
+- A clean rerun was not completed: the prior successful password-change invalidated the initial local-admin credential file, and the user requested immediate stop before isolated admin rotation and rerun.
+- Therefore admin/teacher/student route, role-403, demo material/assignment, real submission grading-through-gateway, and admin backup assertions are NOT claimed as complete.
+
+Exact blocker and next safe action
+- Blocker: authenticated smoke needs one isolated admin credential rotation, followed by the status-only HTML/API harness rerun.
+- User explicitly requested stop; no rotation, retry, or additional authenticated request was performed after that request.
+- Docker remains healthy and the isolated Compose project/volumes are retained.
+

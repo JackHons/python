@@ -1,0 +1,16 @@
+C2C task: c2c_9b4e
+Stage: Docker preflight
+Date: 2026-09-20
+
+docker compose version: PASS
+Result: Docker Compose version v5.3.1
+
+docker version: BLOCKED
+Observed: command produced no client/server output and remained unresponsive beyond the bounded 10-second preflight window; it was interrupted with exit code 1.
+
+docker info: BLOCKED
+Observed: no usable daemon/API response was returned during the same preflight.
+
+Decision: STOP before compose config, build, up, provisioning, or authenticated smoke.
+Secrets: none included.
+Scope: no Docker/WSL installation, system service change, existing .env read/write, volume change, or product-code change.
