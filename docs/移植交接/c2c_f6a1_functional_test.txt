@@ -1,5 +1,12 @@
 Functional test evidence: c2c_f6a1
 Date: 2026-09-21
+
+FINAL STATUS: PASS
+
+Current final result: 127 total / 125 passed / 0 failed / 2 skipped; the cookie blocker found in the first run was resolved, and the fresh Compose three-role flow passed in the final run. The only product remediation was the explicit session-cookie policy; no business/domain/schema/migration changes were made. Six-service health, real Runner grading, hidden-canary isolation, export, backup/verify, audit, role/CSRF/405 boundaries, and restart persistence all passed. The parallel Compose rebuild BuildKit header failure remains an infrastructure caveat; this evidence does not claim a clean six-image rebuild. External validation limits remain unchanged.
+
+## Historical first run (blocked before remediation)
+
 Scope: isolated Compose runtime and local application functional smoke; no production source changes.
 
 Automated regression
