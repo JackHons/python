@@ -23,8 +23,8 @@ async function createTwoQuestionAssignment(fixture) {
 function gradingState(fixture, submissionId, answerId) {
   return {
     submission: fixture.db.get("SELECT status FROM submissions WHERE id = ?", [submissionId]),
-    answer: fixture.db.get("SELECT auto_score, teacher_score, final_score, teacher_feedback, review_status FROM submission_answers WHERE id = ?", [answerId]),
-    grade: fixture.db.get("SELECT auto_score, final_score, max_score, status FROM grades WHERE submission_id = ?", [submissionId]),
+    answer: fixture.db.get("SELECT auto_score, ai_suggested_score, teacher_score, final_score, teacher_feedback, review_status, reviewed_by_id, reviewed_at FROM submission_answers WHERE id = ?", [answerId]),
+    grade: fixture.db.get("SELECT auto_score, ai_suggested_score, teacher_adjusted_score, final_score, max_score, status, graded_by_id, teacher_comment, graded_at, released_at FROM grades WHERE submission_id = ?", [submissionId]),
   };
 }
 
@@ -133,6 +133,56 @@ test("grading projections are scoped, bounded and use immutable question context
     assert.throws(() => assignments.getSubmission(fixture.teacher, started.id), (error) => error?.status === 404);
     assert.throws(() => assignments.releaseGrade(fixture.teacher, started.id), (error) => error?.status === 404);
   } finally {
+    await fixture.close();
+  }
+});
+
+test("automatic grading rechecks the submission lock before persisting a deferred runner result", async () => {
+  const fixture = await makeContentFixture();
+  let releaseResolve;
+  let inFlight;
+  try {
+    const { assignments, code, short, assignment } = await createTwoQuestionAssignment(fixture);
+    const started = assignments.beginSubmission(fixture.student, assignment.id);
+    const codeAnswer = started.answers.find((answer) => answer.questionId === code.id);
+    const shortAnswer = started.answers.find((answer) => answer.questionId === short.id);
+    assert.ok(codeAnswer);
+    assert.ok(shortAnswer);
+
+    let enteredResolve;
+    const entered = new Promise((resolve) => { enteredResolve = resolve; });
+    const release = new Promise((resolve) => { releaseResolve = resolve; });
+    const runner = {
+      async execute() {
+        enteredResolve();
+        await release;
+        return { stdout: "ok", stderr: "", exit_code: 0, timed_out: false, output_limited: false, duration_ms: 1 };
+      },
+    };
+    const execution = new ExecutionService(fixture.db, runner, { runnerVersion: "deferred-race-fixture" });
+    inFlight = execution.grade(fixture.student, codeAnswer.id, "print('ok')");
+    await entered;
+
+    const queuedRun = fixture.db.get("SELECT id, status FROM code_runs WHERE submission_answer_id = ? AND run_type = 'grade' ORDER BY created_at DESC, id DESC LIMIT 1", [codeAnswer.id]);
+    assert.equal(queuedRun.status, "queued");
+    assignments.submit(fixture.student, started.id);
+    assignments.grade(fixture.teacher, started.id, { questionId: code.id, score: 8, feedback: "保留教師評語" });
+    assignments.grade(fixture.teacher, started.id, { questionId: short.id, score: 4, feedback: "短答教師評語" });
+    assignments.releaseGrade(fixture.teacher, started.id);
+    const releasedState = gradingState(fixture, started.id, codeAnswer.id);
+
+    releaseResolve();
+    await assert.rejects(inFlight, isSubmissionLocked);
+
+    assert.deepEqual(gradingState(fixture, started.id, codeAnswer.id), releasedState);
+    const failedRun = fixture.db.get("SELECT status, stderr, finished_at FROM code_runs WHERE id = ?", [queuedRun.id]);
+    assert.equal(failedRun.status, "error");
+    assert.equal(failedRun.stderr, "submission_locked");
+    assert.ok(failedRun.finished_at);
+    assert.equal(fixture.db.get("SELECT COUNT(*) AS count FROM test_results WHERE code_run_id = ?", [queuedRun.id]).count, 0);
+  } finally {
+    releaseResolve?.();
+    await inFlight?.catch(() => {});
     await fixture.close();
   }
 });

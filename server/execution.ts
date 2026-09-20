@@ -295,7 +295,12 @@ export class ExecutionService {
     const passedWeight = outcomes.reduce((sum, item) => sum + (item.status === "passed" ? Math.max(0, Number(item.test.weight ?? 1)) : 0), 0);
     const score = Math.round(snapshot.maxScore * (passedWeight / totalWeight) * 100) / 100;
     const runStatus = outcomes.some((item) => item.status === "timeout") ? "timeout" : outcomes.some((item) => item.status === "error") ? "error" : outcomes.every((item) => item.status === "passed") ? "passed" : "failed";
-    this.db.transaction(() => {
+    const submissionLocked = this.db.transaction(() => {
+      const currentLock = this.db.get<{ submission_status: string; grade_status: string | null }>("SELECT s.status AS submission_status, g.status AS grade_status FROM submissions s LEFT JOIN grades g ON g.submission_id = s.id WHERE s.id = ?", [answer.submission_id]);
+      if (!currentLock || currentLock.submission_status !== "draft" || currentLock.grade_status === "released") {
+        this.db.run("UPDATE code_runs SET status = 'error', stderr = ?, finished_at = ? WHERE id = ?", ["submission_locked", new Date().toISOString(), run.id]);
+        return true;
+      }
       for (const outcome of outcomes) {
         const result = outcome.result;
         this.db.run("INSERT INTO test_results (id, code_run_id, test_case_id, question_id, test_case_snapshot_json, status, actual_output, error_message, duration_ms, score_awarded) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [randomUUID(), run.id, outcome.test.id, snapshot.id, json(outcome.test), outcome.status, outcome.test.visibility === "public" ? result?.stdout ?? null : result?.stdout ?? null, outcome.test.visibility === "public" ? result?.stderr ?? outcome.errorCode ?? null : outcome.errorCode ?? null, result?.duration_ms ?? null, outcome.status === "passed" ? snapshot.maxScore * (Math.max(0, Number(outcome.test.weight ?? 1)) / totalWeight) : 0]);
@@ -309,7 +314,9 @@ export class ExecutionService {
       const grade = this.db.get<{ id: string }>("SELECT id FROM grades WHERE submission_id = ?", [answer.submission_id]);
       if (grade) this.db.run("UPDATE grades SET auto_score = ?, final_score = ?, max_score = ?, status = 'review_required', updated_at = ? WHERE id = ?", [totals?.auto_score ?? 0, totals?.final_score ?? 0, totals?.max_score ?? 0, new Date().toISOString(), grade.id]);
       else this.db.run("INSERT INTO grades (id, submission_id, auto_score, final_score, max_score, status) VALUES (?, ?, ?, ?, ?, 'review_required')", [randomUUID(), answer.submission_id, totals?.auto_score ?? 0, totals?.final_score ?? 0, totals?.max_score ?? snapshot.maxScore]);
+      return false;
     });
+    if (submissionLocked) throw new DomainError("submission_locked", "Automatic grading is only available for draft submissions", 409);
     if (busyError) throw busyError;
     return this.getRun(actor, run.id);
   }
