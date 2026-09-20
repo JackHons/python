@@ -1,0 +1,43 @@
+Functional test evidence: c2c_f6a1
+Date: 2026-09-21
+Scope: isolated Compose runtime and local application functional smoke; no production source changes.
+
+Automated regression
+- Command: npm run test:all
+- Result: 125 tests, 123 passed, 0 failed, 2 skipped.
+- Skips: real PPTX fixture/conversion tests because PPTX_FIXTURE_PATH was not configured.
+- Existing structured diagnostic output was redacted by the application test contract; no secret values were recorded.
+
+Isolated Compose runtime
+- Project: phase11-c2c-f6a1
+- Services: gateway, web, backend, runner, converter, email-worker all reached healthy status after correcting the temporary test AI key to exactly 32 bytes.
+- Backend readiness: HTTP 200; application ok; database ok; foreignKeys 1.
+- Runner health: status ok.
+- Gateway health: HTTP 200.
+- Root page: HTTP 200.
+- Unauthenticated API me: HTTP 401.
+- Unauthenticated admin page: HTTP 401.
+- Evil Origin login mutation: HTTP 403.
+- Same-origin invalid login: HTTP 401.
+- Legacy /api/run: HTTP 404.
+
+Authentication finding
+- Synthetic admin rotation and login: HTTP 200.
+- Response Set-Cookie includes Secure.
+- With a normal HTTP cookie jar against the local HTTP Gateway, password change and subsequent me request returned HTTP 401 because the Secure cookie was not sent.
+- Replaying the same session cookie explicitly returned password change HTTP 200 and me HTTP 200.
+- The in-app browser page through the Compose Gateway remained at 「正在驗證登入狀態…」 instead of reaching the login form.
+- This is a local HTTP deployment/session-cookie integration blocker for browser login. It is not a failure of the backend authentication logic when the session cookie is delivered over a secure transport.
+
+Worker handoff
+- The delegated Luna test-only worker started the isolated Compose project but did not finish or emit an evidence file within the execution window; it was stopped after repeated no-output waits.
+- No product source, test source, schema, or migration files were changed by the worker.
+
+Cleanup
+- The exact isolated Compose project was stopped with docker compose down, without -v.
+- Containers and networks were removed; project volumes were retained for forensic review.
+- Temporary test credentials were not written into the repository or this report.
+
+Limits
+- Full three-role author → publish → Runner → submit → teacher release → student result flow was not completed in this run because the delegated worker hung before producing its final result.
+- Browser visual, responsive, accessibility, device, formal provider, and public deployment validation remain outside this evidence.
