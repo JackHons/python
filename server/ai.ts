@@ -32,6 +32,8 @@ function usageDate(clock: Clock, timezone: string) {
   }
 }
 function canManageCourse(db: LocalDatabase, actor: Actor, courseId: string) {
+  const course = db.get<{ status: string }>("SELECT status FROM courses WHERE id = ?", [courseId]);
+  if (!course || course.status === "archived") return false;
   if (actor.role === "admin") return true;
   if (actor.role !== "teacher") return false;
   return Boolean(db.get("SELECT 1 FROM courses c WHERE c.id = ? AND (c.owner_teacher_id = ? OR EXISTS (SELECT 1 FROM course_class_assignments cca JOIN class_memberships cm ON cm.class_id = cca.class_id WHERE cca.course_id = c.id AND cm.user_id = ? AND cm.member_role = 'teacher' AND cm.status = 'active'))", [courseId, actor.id, actor.id]));

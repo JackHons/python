@@ -103,6 +103,8 @@ test("AI question authoring requires review, materializes idempotently, and copi
     const pageSource = readFileSync(new URL("../app/page.tsx", import.meta.url), "utf8");
     assert.match(pageSource, /materializeAiQuestionArtifact\(selected\.id\)/);
     assert.match(pageSource, /selected\.artifact_type === "question"/);
+    assert.match(pageSource, /selected\.artifact_type === "question" \? L\("建立題目草稿", "Create question draft"\)/);
+    assert.match(pageSource, /已建立題目草稿，請到題庫確認後發布/);
   } finally {
     await fixture.close();
   }
@@ -130,6 +132,38 @@ test("malformed AI authoring output creates no artifact or question", async () =
     await assert.rejects(() => review.generateQuestion(fixture.teacher, fixture.course.id, { requestKey: "bad-json", type: "short_answer", topic: "錯誤格式" }, ai), (error) => error instanceof DomainError && error.code === "ai_question_invalid");
     assert.equal(fixture.db.get("SELECT COUNT(*) AS count FROM ai_artifacts").count, 0);
     assert.equal(fixture.db.get("SELECT COUNT(*) AS count FROM questions").count, 0);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("AI authoring and review fail closed for archived or nonexistent courses", async () => {
+  const fixture = await makeContentFixture();
+  try {
+    const clock = await configure(fixture);
+    const provider = new FakeAiProvider(async () => ({ content: response(), inputTokens: 20, outputTokens: 40, model: "fake" }));
+    const ai = new AiService(fixture.db, provider, clock);
+    const review = new AiReviewService(fixture.db, clock);
+
+    const archivedCourse = fixture.education.createCourse(fixture.teacher, { titleZh: "封存課程", joinCode: "ARCHIVE1" });
+    fixture.education.updateCourse(fixture.teacher, archivedCourse.id, { status: "archived" });
+    await assert.rejects(() => review.generateQuestion(fixture.teacher, archivedCourse.id, { requestKey: "archived-author", type: "short_answer", topic: "封存" }, ai), (error) => error instanceof DomainError && error.code === "not_found");
+    assert.equal(provider.calls.length, 0);
+    assert.equal(fixture.db.get("SELECT COUNT(*) AS count FROM ai_artifacts").count, 0);
+
+    await assert.rejects(() => review.generateQuestion(fixture.admin, "missing-course", { requestKey: "missing-author", type: "short_answer", topic: "不存在" }, ai), (error) => error instanceof DomainError && error.code === "not_found");
+    assert.equal(provider.calls.length, 0);
+    assert.equal(fixture.db.get("SELECT COUNT(*) AS count FROM ai_artifacts").count, 0);
+
+    const artifact = review.create(fixture.teacher, { artifactType: "question", courseId: fixture.course.id, content: { ...JSON.parse(response()), requestKey: "before-archive" } });
+    const artifactCount = fixture.db.get("SELECT COUNT(*) AS count FROM ai_artifacts").count;
+    fixture.education.updateCourse(fixture.teacher, fixture.course.id, { status: "archived" });
+    assert.equal(fixture.db.get("SELECT COUNT(*) AS count FROM ai_artifacts").count, artifactCount);
+    assert.throws(() => review.getStaff(fixture.teacher, artifact.id), (error) => error instanceof DomainError && error.code === "not_found");
+    assert.throws(() => review.materializeQuestion(fixture.teacher, artifact.id), (error) => error instanceof DomainError && error.code === "not_found");
+    assert.throws(() => review.review(fixture.teacher, artifact.id, "approved"), (error) => error instanceof DomainError && error.code === "forbidden");
+    assert.throws(() => review.publish(fixture.teacher, artifact.id), (error) => error instanceof DomainError && error.code === "forbidden");
+    assert.throws(() => review.listStaff(fixture.teacher, fixture.course.id), (error) => error instanceof DomainError && error.code === "forbidden");
   } finally {
     await fixture.close();
   }
