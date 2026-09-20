@@ -1,0 +1,190 @@
+{
+  "schemaVersion": "phase9a-independent-test-v1",
+  "date": "2026-08-23",
+  "timezone": "Asia/Macau",
+  "workspace": "/Users/hon/Documents/ChatGPT/學習平台",
+  "conclusion": "CONDITIONAL_PASS_CORE_GATES",
+  "scope": {
+    "productCodeModified": false,
+    "schemaOrMigrationModified": false,
+    "composeModified": false,
+    "liveVolumesDeleted": false,
+    "liveDatabaseModifiedByTestData": false,
+    "temporaryStorageUsed": true,
+    "realGatewayProbeUsed": true,
+    "secretsOrPiiEmitted": false
+  },
+  "summary": {
+    "matrixGroups": 24,
+    "pass": 17,
+    "partial": 4,
+    "missing": 3,
+    "fail": 0,
+    "blocked": 0,
+    "p0FailRootCauses": 0,
+    "p1FailRootCauses": 0
+  },
+  "checks": [
+    {
+      "id": "gateway-csrf-real",
+      "status": "PASS",
+      "priority": "P0",
+      "evidence": ["gateway/server.mjs:34-42", "gateway/server.mjs:67-83", "tests/gateway-csrf.integration.test.mjs"],
+      "observed": {
+        "health": 200,
+        "evilOrigin": 403,
+        "malformedOrigin": 403,
+        "sameOriginInvalidLogin": 401,
+        "missingOrigin": 403,
+        "forgedBackendToken": 403
+      },
+      "note": "No token value, cookie, password or personal data was emitted. Invalid login probe may create a denied audit event only."
+    },
+    {
+      "id": "student-known-id-scope",
+      "status": "PASS",
+      "priority": "P0",
+      "evidence": ["tests/phase9a.integration.test.mjs:9-25", "server/education.ts:486-529", "server/content.ts:180-235"],
+      "observed": ["draft unit/material/assignment hidden", "archived course/unit hidden", "teacher edit after archive allowed"]
+    },
+    {
+      "id": "assignment-server-clock-policy",
+      "status": "PASS",
+      "priority": "P0",
+      "evidence": ["tests/phase9a.integration.test.mjs:29-65", "tests/phase9a.integration.test.mjs:87-110", "server/content.ts:350-416", "server/content.ts:520-626"],
+      "observed": ["publish boundary", "due exact and after-due rejection", "allowLate", "maxAttempts", "allowResubmit", "answer/test release", "hidden projection"]
+    },
+    {
+      "id": "teacher-release-ui",
+      "status": "PASS",
+      "priority": "P1",
+      "evidence": ["app/page.tsx:861-878", "tests/phase9a-ui.contract.test.mjs", "independent source roundtrip contract"],
+      "observed": ["independent score checkbox state and test-results checkbox state", "server-value hydration", "true-to-false state payload", "no hardcoded true in save payload"]
+    },
+    {
+      "id": "runner-package-policy",
+      "status": "PASS",
+      "priority": "P0",
+      "evidence": ["tests/execution.integration.test.mjs", "services/runner/server.py:80-125,227-253", "docker-compose.yml:75-137", "independent fallback isolation probe"],
+      "observed": {"forgedPackage": 422, "unallowedThirdParty": 422, "enabledNumpyPandasMatplotlib": 200, "fakeSitePackagesModuleIsStdlib": false, "pipBlocked": true}
+    },
+    {
+      "id": "runner-host-python-compatibility",
+      "status": "PASS",
+      "priority": "P1",
+      "commands": ["/usr/bin/python3 -m unittest services.runner.tests.test_runner", "/Users/hon/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest services.runner.tests.test_runner", "docker run --rm --entrypoint python -v $PWD/services/runner/tests:/opt/runner/tests:ro <runner-image> -m unittest tests.test_runner"],
+      "observed": {"hostPython": "3.9.6, 12/12 pass", "bundledPython": "3.12.13, 12/12 pass", "dockerPython": "3.12 image, 12/12 pass", "fallbackSitePackagesExclusion": true, "pipRejected": true}
+    },
+    {
+      "id": "accounts-classes-scope",
+      "status": "PASS",
+      "priority": "P0",
+      "evidence": ["tests/auth.integration.test.mjs", "tests/rbac.integration.test.mjs", "tests/import.integration.test.mjs", "tests/phase9a.integration.test.mjs:68-85"],
+      "observed": ["admin archive self denied", "teacher shared-class reset allowed", "cross-class reset denied", "session revoke", "CSV/XLSX transaction import"]
+    },
+    {
+      "id": "student-autosave-teacher-grade",
+      "status": "PASS",
+      "priority": "P1",
+      "evidence": ["app/page.tsx:77-92", "app/page.tsx:756", "server/execution.ts:204-212", "server/content.ts:601-626"],
+      "observed": ["autosave snapshot", "paste character count/history", "teacher submission list", "score/feedback hidden before release", "score/feedback visible after release"]
+    },
+    {
+      "id": "node-regression",
+      "status": "PASS",
+      "priority": "P1",
+      "command": "pnpm test:all",
+      "observed": {"tests": 62, "passed": 62, "failed": 0, "skipped": 0}
+    },
+    {
+      "id": "static-build-gates",
+      "status": "PASS",
+      "priority": "P1",
+      "commands": ["pnpm exec tsc --noEmit", "pnpm exec eslint . --ignore-pattern dist --ignore-pattern .next", "pnpm build", "git diff --check"],
+      "observed": "all pass; build has only dynamic route classification warning"
+    },
+    {
+      "id": "docker-runtime-health",
+      "status": "PASS",
+      "priority": "P1",
+      "commands": ["docker compose config --quiet", "sh scripts/smoke-test-compose.sh", "docker compose ps --all"],
+      "observed": {"servicesHealthy": ["gateway", "web", "backend", "runner"], "runnerPublishedHostPort": false, "database": "ok", "foreignKeys": 1}
+    },
+    {
+      "id": "ai-provider",
+      "status": "MISSING",
+      "priority": "P1",
+      "evidence": ["server/http/backend.ts:26-28", "server/http/backend.ts:141-147"],
+      "note": "Backend uses UnavailableAiProvider; fake provider tests are not real vendor integration."
+    },
+    {
+      "id": "ppt-conversion",
+      "status": "PARTIAL",
+      "priority": "P1",
+      "evidence": ["tests/materials.integration.test.mjs", "docs/任務包/教材上傳功能測試報告.md"],
+      "note": "Queue contract only; no conversion worker/output asset/preview."
+    },
+    {
+      "id": "live-class-ui",
+      "status": "MISSING",
+      "priority": "P1",
+      "evidence": ["app/page.tsx:975-1005"],
+      "note": "Component exists but is not wired into the main role branch; publish and lock buttons are disabled."
+    },
+    {
+      "id": "smtp",
+      "status": "PARTIAL",
+      "priority": "P2",
+      "evidence": ["tests/email.retry.test.mjs", "docs/任務包/證據/phase5-tests.txt"],
+      "note": "FakeMailer/outbox only; no real SMTP or scheduler."
+    },
+    {
+      "id": "browser-40",
+      "status": "MISSING",
+      "priority": "P2",
+      "evidence": ["docs/任務包/證據/phase8b-compose-load.json", "docs/任務包/證據/phase9a-validation.txt"],
+      "note": "40 HTTP users are not 40 browser contexts; no Playwright/WebKit run."
+    },
+    {
+      "id": "runner-strong-sandbox",
+      "status": "PARTIAL",
+      "priority": "P0_PUBLIC_RELEASE",
+      "evidence": ["services/runner/server.py:1-5", "docs/任務包/證據/phase8b-runner-security.json"],
+      "note": "Long-lived container is an MVP boundary, not disposable per-job gVisor/Kata/microVM isolation."
+    }
+  ],
+  "revalidation": {
+    "targetedNode": {"tests": 19, "passed": 19, "failed": 0},
+    "fullNode": {"tests": 62, "passed": 62, "failed": 0},
+    "teacherUiContract": "PASS",
+    "serverReleaseProjection": "PASS",
+    "pythonRuntimes": {"host39": "12/12", "bundled312": "12/12", "docker312": "12/12"},
+    "compose": {"config": "PASS", "smoke": "PASS", "servicesHealthy": true, "foreignKeys": 1},
+    "productCodeModified": false,
+    "liveVolumeModified": false
+  },
+  "nonGates": {
+    "realAi": false,
+    "realSmtp": false,
+    "pptConversionWorker": false,
+    "browser40": false,
+    "strongSandbox": false,
+    "dependencyNetworkCveQuery": false
+  },
+  "dependencyRisk": {
+    "source": "docs/任務包/證據/phase8b-runtime-setup.txt",
+    "reportedByPriorEvidence": {"total": 20, "low": 1, "moderate": 4, "high": 15},
+    "independentNetworkAudit": "NOT_RUN_NPM_UNAVAILABLE",
+    "lockfileScan": {"lockfileVersion": 3, "deprecatedTransitivePackages": 2, "cveConclusion": false}
+  },
+  "historicalEvidenceCaveats": [
+    "phase9a-validation.txt says python3 runner 12/12 but does not identify runtime; this report now records host 3.9.6, bundled 3.12.13 and Docker 3.12 explicitly",
+    "Phase 8 evidence has historical 47/50 and 50/50 counts; current pnpm test:all is 62/62",
+    "phase8b-ui-wiring.json has no reproducible authenticated browser command"
+  ],
+  "recommendedFollowups": [
+    "Add real PPT conversion worker integration with output asset",
+    "Add real AI provider, SMTP sandbox/scheduler, and authenticated Playwright browser coverage",
+    "Replace long-lived runner with disposable strong sandbox before public/exam use"
+  ]
+}

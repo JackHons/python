@@ -1,0 +1,39 @@
+Phase 7 verification (2026-08-20, Asia/Macau)
+
+Backend contract/E2E:
+  node --experimental-strip-types --test tests/backend.contract.test.mjs tests/backend.e2e.test.mjs
+  PASS 3/3
+  - internal backend token and same-origin mutation guard
+  - initial-password sessions receive password_change_required (428) on protected routes; /me and password change remain available
+  - production backend startup rejects missing/short BACKEND_INTERNAL_TOKEN
+  - production Secure HttpOnly session cookie and server-derived role
+  - admin creates teacher; teacher creates course/unit
+  - admin creates teacher and student; teacher creates class/course and enrolls student
+  - teacher creates/publishes material, Python question with public/hidden cases and assignment
+  - student starts/saves/grades/submits; teacher reviews and releases; student payload hides hidden canary
+  - fake runner execution, classroom activity transition and parseable XLSX export
+  - close/reopen against the same SQLite file preserves identity and course data
+
+Regression:
+  P1 auth + P7 security/E2E command: PASS 9/9
+  P2-P6 regression command: PASS 32/32
+  P1 PASS 5/5; P2 PASS 8/8; P3 PASS 6/6; P4 PASS 8/8;
+  P5 PASS 5/5; P6 PASS 5/5; P7 PASS 3/3
+
+Static/build:
+  TypeScript tsc --noEmit: PASS
+  ESLint: PASS
+  drizzle-kit check: PASS
+  vinext build: PASS
+  rendered-html.test.mjs: PASS 3/3
+
+Security evidence:
+  Responses use stable error code/message objects and request correlation IDs; backend
+  token is accepted only server-side and is not returned by the API contract test.
+  Student projection and hidden-test canary coverage remains in P2/P3 regression tests.
+
+Not verified in this phase:
+  Docker backend/runner compose smoke and 40-user load (Docker unavailable; P8 gate).
+  Browser automation and real desktop/tablet/mobile visual interaction.
+  Real external AI/SMTP provider calls. Production AI remains fail-closed until configured.
+  PPT binary conversion worker and CJK font rendering in PDF (existing P8 risks).

@@ -1,0 +1,19 @@
+Local demo student and fresh UI evidence (2026-08-20 Asia/Macau)
+
+Provision command:
+LOCAL_STUDENT_DEMO_CONFIRM=PROVISION_STUDENT_DEMO node scripts/provision-student-demo.mjs
+Result: repeated provisioning succeeded; credential output was not printed. `.local-secrets/student-demo.json` is mode 0600 and gitignored.
+
+API smoke (credentials read only inside the local test process):
+login=200, me=200, courses=200, courseFound=true, assignments=200, assignmentFound=true, units=200, unitCount=1, materials=200, materialCount=1.
+startSubmission=201, answerCount=1, publicCases=1, hiddenCasesExposed=0, hiddenFieldsExposed=false.
+
+Fresh homepage asset check:
+GET / returned 200 and the current hashed `/_next/static/css/*.css` returned 200. No fresh request referenced `/app/globals.css`.
+
+Fresh browser screenshots and metrics:
+- `ui-login-360.png`: scrollWidth=360, viewport=360, cardWidth=328, cardMaxWidth=480px, horizontalOverflow=false.
+- `ui-login-768.png`: scrollWidth=768, viewport=768, cardWidth=480, horizontalOverflow=false.
+- `ui-login-1440.png`: scrollWidth=1440, viewport=1440, cardWidth=480, cardMaxWidth=480px, two-column layout, horizontalOverflow=false.
+
+The screenshots show the reference-inspired teal/navy login layout and are fresh after the web image rebuild. Logged-in visual role smoke was not performed through the browser because browser policy requires action-time confirmation before entering a password; the same student login/course/assignment path was verified through the local API smoke above.

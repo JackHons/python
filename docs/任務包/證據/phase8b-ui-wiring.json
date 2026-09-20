@@ -1,0 +1,36 @@
+{
+  "timestamp": "2026-08-20",
+  "scope": "macOS ARM64 Colima Docker local internal test",
+  "gateway": {
+    "hostPort": 3000,
+    "health": 200,
+    "unauthenticatedApi": 401,
+    "homepage": 200,
+    "legacyRunProduction": 404,
+    "webHasHostPort": false,
+    "runnerHasHostPort": false,
+    "serverOnlyTokenExposedToBrowser": false
+  },
+  "browserRenderedRoles": {
+    "admin": { "login": "passed", "dashboard": "passed", "statusSource": "admin API" },
+    "teacher": { "login": "passed", "dashboard": "passed", "courseSource": "teacher API", "teacherWorkspace": "course-unit-material-question-assignment CRUD/publish contract passed" },
+    "student": { "login": "passed", "dashboard": "passed", "courseSource": "student API", "coursesView": "passed", "resourcesView": "passed", "joinCourse": "real API contract passed", "practiceSnapshotExecuteGradeSubmit": "real API contract passed", "hiddenProjection": "public details plus hidden pass/fail only", "emptyStates": "passed" }
+  },
+  "auth": {
+    "firstLoginGate": 428,
+    "passwordChange": "passed",
+    "fixtureCleanup": "passed",
+    "adminLocalRestoredToMustChange": true
+  },
+  "tests": {
+    "proxyContract": "2 passed",
+    "renderedHtml": "4 passed, 0 failed; teacher workspace/student join/practice source contracts asserted",
+    "testAll": "47 passed, 0 failed",
+    "composeSmoke": "passed"
+  },
+  "notes": [
+    "Browser role checks used temporary UI fixture accounts; accounts were archived and sessions revoked after the check.",
+    "No password, token, or personal data is included in this evidence.",
+    "Gateway runtime owns the backend token; web image and browser responses do not receive it."
+  ]
+}

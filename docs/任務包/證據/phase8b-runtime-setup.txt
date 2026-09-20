@@ -1,0 +1,93 @@
+Phase 8B runtime setup preflight
+Date: 2026-08-20 Asia/Macau
+
+Observed host:
+- arch: arm64
+- macOS: 15.7.9 (24G830)
+- CPU cores: 8
+- memory: 8589934592 bytes (8 GiB)
+- root disk: 228 GiB total, 148 GiB available
+- Homebrew: 6.0.18 at /opt/homebrew
+
+Before setup:
+- docker: absent
+- docker-compose: absent
+- colima: absent
+- Docker context query: command not found
+- Colima instance query: command not found
+- ~/.docker/config.json: absent
+
+No secrets, personal identifiers, credentials or existing volume contents are
+recorded here. Planned local Colima allocation is 4 CPU, 4 GiB memory, 50 GiB
+sparse disk, subject to successful startup and available host resources.
+
+Installed/reused runtime (no sudo, no Docker Desktop):
+- Homebrew formulae: colima 0.10.3, lima 2.2.0, docker 29.7.2,
+  docker-compose 5.5.0, docker-buildx 0.36.1.
+- Colima profile: default, Running, aarch64, 4 CPU, 4 GiB, 50 GiB,
+  Docker runtime, VZ VM.
+- Docker client/server: 29.7.2/29.5.2, linux/arm64, context colima.
+- Docker plugin directory merged into a newly created ~/.docker/config.json;
+  no prior config/credentials/context was present.
+
+Initial multi-service build exposed package-lock drift: Docker `npm ci`
+reported missing webpack/terser transitive entries. A Node 22 container ran
+`npm install --package-lock-only --ignore-scripts --no-audit --no-fund` with a
+temporary non-root npm cache; no host node_modules were used. Sequential
+ARM64 builds then completed for backend, web, and runner. The initial `npm ci`
+also reported 20 dependency audit findings (1 low, 4 moderate, 15 high); no
+automatic audit fix or CVE conclusion was made in this phase.
+The first parallel `docker compose build --pull` also hit a BuildKit/Compose
+session-header error; rebuilding each service sequentially completed without
+error and is the reproducible build evidence used below.
+
+Compose runtime gate:
+- `docker compose config --quiet`: passed.
+- `docker compose up -d`: web/backend/runner started; all three healthy.
+- Images: web sha256:58c895b411dc1cfb6accc1b5ec9fca21a07e25367d2d443784389b9c6b886f5a,
+  backend sha256:5ad6480294ae25fe35dffef2c555fd6130a69c96eb9dfee022de2b4118e937a2,
+  runner sha256:d4b46ca4e403772de559c2cf245bd4bf9ef67ee3536e9287c32ecbc31c00a8ce;
+  all linux/arm64.
+- `scripts/smoke-test-compose.sh`: passed Web, backend readiness, legacy route
+  404, and Python Runner execution.
+- Runner has no published host port; only web publishes 3000.
+- Volumes created/preserved: backend-db, backend-storage, backend-exports,
+  backend-backups. No `down -v` was used.
+- Browser home response and web bundle did not contain actual backend token,
+  runner token, or AI master key values.
+- After local admin credential provisioning, the rebuilt web image was scanned
+  again with the actual backend token value and produced no match; `.local-secrets`
+  is excluded by both `.gitignore` and `.dockerignore`.
+
+Post-build fixes and live gates:
+- First web proxy POST through Node/undici failed with `duplex option is required
+  when sending a body`; `worker/index.ts` now forwards streamed bodies with
+  `duplex: half`, the web image was rebuilt, and login/POST proxy was retested.
+- Host -> web -> backend -> runner 40-user load passed: 40/40 course reads,
+  40/40 material reads, 40/40 grades, 40/40 submits, hidden canary 0;
+  p50 38.78 ms, p95 475.79 ms, max 1509.97 ms. Evidence:
+  `phase8b-compose-load.json` (this sample's queue distribution is not fixed).
+- `docker compose restart` followed by authenticated course read passed;
+  evidence `phase8b-persistence.json`.
+- Full backup created and manifest/database checksum verified; restore to an
+  isolated backend `/tmp` target passed foreign_keys=1 and integrity=ok;
+  evidence `phase8b-backup.json` and `phase8b-restore.json`.
+- Runner container malicious fixtures passed network/subprocess/pip rejection,
+  timeout, output limit and canary checks; evidence `phase8b-runner-security.json`.
+- Local `.env` and all temporary seed/reset credential files were mode 0600;
+  no credential value was written to repo evidence or normal output.
+- Final account cleanup: `scripts/provision-local-admin.mjs --rotate` ran with
+  explicit confirmation. It created/rotated `admin-local` with a random
+  must-change initial password in `.local-secrets/admin.json` (0600), archived
+  43 load fixture accounts and revoked their sessions. The secret file is
+  gitignored/Docker-ignored and its contents are not recorded here.
+
+Gateway/UI wiring revalidation:
+- Added `gateway` as the only published host port (3000); web has no host port.
+- Gateway health returned 200, unauthenticated `/api/v1/me` returned 401, and
+  production `/api/run` returned 404. Gateway injected the backend token only
+  on the private upstream hop; browser responses and web image contained no
+  token value.
+- Rebuilt/recreated gateway and web without deleting volumes; gateway, web,
+  backend and runner remained healthy. Browser admin, teacher and student role
+  dashboards rendered from session/API state. See `phase8b-ui-wiring.json`.

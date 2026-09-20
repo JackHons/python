@@ -1,0 +1,84 @@
+Phase 9B validation evidence
+Date/time zone: 2026-08-23 Asia/Macau
+Workspace: /Users/hon/Documents/ChatGPT/學習平台
+
+Scope and data safety
+- No live .env, .local-secrets, student record or Docker volume was read, deleted or rewritten for functional tests.
+- Domain/HTTP tests used in-memory or temporary SQLite/storage.
+- The user PPTX fixture was read-only; its SHA-256 remained 1d9ef8a46d0672c59eca58b44d9cd3b54dd3e9a0cf34f8e98d686e8817805384.
+- Migrations 0008 and 0009 only add nullable/defaulted provider/conversion columns; no destructive migration was added.
+- No browser QA was run in this phase. UI evidence is typed contract and rendered-source testing only.
+
+Current-priority product evidence
+1. Student workflow
+   - server/content.ts orders student assignments by non-null due_at ascending, then null due dates, and projects upcoming/past_due/closed/no_due plus can_start from the injected server clock.
+   - app/lib/api-client.ts applies the same due/null ordering after cross-course aggregation. app/page.tsx StudentHome shows only upcoming rows as deadline reminders, explicitly labels past/closed, disables non-actionable items and keeps late-enabled past work actionable.
+   - tests/phase9b-assignment-order.integration.test.mjs creates far/null/near/closed/past plus an equal-due tie in deliberately different creation order; server and page order agree on due/null ordering and the ID tie-break, while the nearest upcoming items are not displaced by the farther deadline.
+   - app/page.tsx StudentHome uses real assignment/assessment/classroom-session data for reminders.
+   - StudentCourses implements selected course -> unit -> published materials/PPT/practice navigation with explicit loading/empty states.
+   - Existing Phase 9A execution tests continue to prove starter code, bounded stdin, public test detail, hidden status-only projection, autosave and submission.
+2. Layered AI hints
+   - tests/phase9b-ai-http.integration.test.mjs: local fake HTTP server received three real OpenAI-compatible HTTP calls; requested hint levels were 1, 2, 3; restarting/reusing the same scoped conversation returned successful_hint_count=3.
+   - Provider key and model stayed server-side; 429/5xx/timeout mapping was tested without returning provider response bodies.
+3. Teacher analytics
+   - TeacherAnalyticsDashboard calls overview, question-accuracy, common-errors, ai-usage, code-history and learning-time endpoints, with mutually exclusive course/class filters and optional student filter.
+   - tests/analytics.integration.test.mjs proves in-scope course/class/student queries and outsider student filter rejection.
+4. Real PPT conversion
+   - Fixture: /Users/hon/Documents/ChatGPT/PPT/projects/python_ch02_basics_ppt169_20260820/exports/python_ch02_basics_20260820_045200_narrated.pptx
+   - tests/ppt-conversion.integration.test.mjs: PASS. It performed quarantine/signature/release, published scoped material, claimed a queued job, ran LibreOffice headless and Poppler, asserted succeeded and page_count > 0, parsed PDF signature, parsed PNG signature, tested enrolled student access and outsider rejection, and verified source/download SHA unchanged.
+   - Docker converter image: linux/arm64 sha256:bf59b3c12f23f15dc09ea40d0391eed646bfbf4fc0ff4fd61190e79a9bbb7919.
+   - Image tool probe: LibreOffice 7.4.7.2, pdfinfo/pdftoppm 22.12.0.
+   - Isolated ARM64 container end-to-end: PASS 1/1 in 14904.128257 ms. The container ran with network none, read-only root, 512 MiB tmpfs, 1 GiB memory and pids-limit 128; the fixture and tests were read-only binds, and no live DB/storage volume was mounted.
+   - Live Compose converter health: healthy; networkMode=none; readOnlyRootfs=true; no host port. No live conversion job was injected into the user database.
+
+Targeted tests
+- node --experimental-strip-types --test tests/phase9b-ai-http.integration.test.mjs tests/phase9b-ui.contract.test.mjs
+  PASS 4/4 during implementation.
+- node --experimental-strip-types --test tests/phase9b-ai-http.integration.test.mjs plus AI privacy/quota/review and analytics integration
+  PASS 11/11 during implementation.
+- node --experimental-strip-types --test tests/ppt-conversion.integration.test.mjs
+  PASS 1/1 using the real read-only fixture.
+- node --experimental-strip-types --test tests/smtp.integration.test.mjs
+  PASS 1/1 using a local fake SMTP server; this proves the adapter/outbox only, not a school SMTP provider.
+
+Runner stdlib hardening
+- services/runner/server.py rejects any resolved module path containing a complete site-packages or dist-packages component, even when nested below a configured stdlib root and absent from purelib/platlib. Builtin/frozen and genuine stdlib remain allowed.
+- The test creates temporary third-party modules under both nested directory forms; it does not depend on host setuptools. pip/arbitrary third-party remain rejected, while NumPy/Pandas/Matplotlib still require explicit server allowlist.
+
+Complete regression (final run)
+- Command: pnpm run test:all
+- Result: PASS 69/69; fail 0; skipped 0; duration 10602.834875 ms in the final run.
+- The 69 include auth/RBAC/import/content/submission/execution/hidden/AI/quota/review/classroom/notification/analytics/export/audit/backup/backend/Gateway/Phase 9A/Phase 9B/order/PPT/SMTP contracts.
+
+Runner regression
+- /usr/bin/python3 -m unittest services.runner.tests.test_runner
+  macOS system Python 3.9: PASS 13/13 in 1.456s.
+- bundled Python 3.12.13 -m unittest services.runner.tests.test_runner
+  PASS 13/13 in 1.305s.
+- Docker runner image with read-only mounted tests
+  Python 3.12: PASS 13/13 in 1.394s after rebuilding the image from the hardened policy.
+
+Static/build gates
+- pnpm exec tsc --noEmit: PASS.
+- pnpm run lint: PASS, 0 errors.
+- pnpm run build: PASS, Vinext completed all five environments. The existing dynamic-route classification note and proxy environment warning remain non-fatal.
+- git diff --check: no whitespace error was printed; repository still has no reliable tracked baseline, so this cannot prove a complete historical diff.
+
+Docker/Compose gates
+- docker compose config --quiet: PASS.
+- converter image build: PASS on linux/arm64 using clean npm ci and Debian ARM64 LibreOffice/Poppler/fonts packages.
+- backend/web/runner image build: PASS; services recreated without deleting volumes.
+- scripts/smoke-test-compose.sh: PASS after services became healthy. One first smoke immediately after web recreate returned transient 502 while the web health state was starting; retry after healthy passed.
+- docker compose ps: gateway, web, backend, runner, converter and email-worker all healthy. Gateway alone publishes http://localhost:3000; runner/converter have no host port.
+- backend /ready from inside the container: status=ok, database=ok, foreignKeys=1, storage=configured.
+
+Dependency note
+- Clean npm ci in the application image reported 20 vulnerabilities (1 low, 4 moderate, 15 high). The converter production-only npm ci reported 1 high vulnerability. No force update was applied because remediation requires package-by-package compatibility review. These counts are npm audit observations, not a completed CVE determination.
+
+Honest remaining work
+- No school/production AI vendor or real API key was configured; local fake HTTP verifies the adapter but is not vendor approval.
+- SMTP adapter/worker exists, but school SMTP, credential policy, delivery UI and browser QA are not complete; latest product priority stopped further expansion.
+- Full teacher live-class controller, complete notification centre, backup/audit operations UI, exam mode, similarity detection and real gamification remain partial/missing.
+- 40 real browser tabs were not run. Earlier HTTP/container load is not browser proof.
+- The long-lived Runner container remains an MVP boundary rather than disposable per-job strong isolation.
+- LibreOffice conversion output passed structural tests; a teacher still needs visual fidelity review on representative school PPT/PPTX decks.

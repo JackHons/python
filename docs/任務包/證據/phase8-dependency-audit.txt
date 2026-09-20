@@ -1,0 +1,8 @@
+Phase 8 dependency/lockfile review
+
+- `package-lock.json` exists with lockfileVersion 3 and is the only project lockfile.
+- `pnpm-lock.yaml` is absent; Dockerfile uses `npm ci` against package-lock.
+- Bundled pnpm supply-chain verification inspected 649 lock entries successfully.
+- It reported two deprecated transitive subdependencies: `@esbuild-kit/core-utils@3.3.2` and `@esbuild-kit/esm-loader@2.6.5`.
+- No network CVE database query was performed and no CVE conclusion is claimed.
+- `.dockerignore` excludes host `node_modules`, `.env`, `dist`, and runner source from the root web/backend build context; runner has a separate build context.

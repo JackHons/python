@@ -1,0 +1,1 @@
+ALTER TABLE `material_conversion_jobs` ADD `page_count` integer;

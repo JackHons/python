@@ -1,0 +1,32 @@
+Phase 5 evidence (2026-08-20)
+
+P5 command:
+node --experimental-strip-types --test \
+  tests/classroom.integration.test.mjs \
+  tests/notifications.integration.test.mjs \
+  tests/email.retry.test.mjs \
+  tests/classroom.rbac.security.test.mjs
+Result: 5 passed, 0 failed.
+
+Regression commands:
+- Phase 1: 5 passed, 0 failed
+- Phase 2: 8 passed, 0 failed
+- Phase 3: 6 passed, 0 failed
+- Phase 4: 8 passed, 0 failed
+- TypeScript: tsc --noEmit passed
+- ESLint: passed
+- drizzle-kit check: Everything's fine
+- Fresh SQLite migration: foreign_keys=1, integrity=ok, foreign_key_check=[]
+- vinext build: Build complete
+
+Covered evidence:
+- classroom server version, event replay, idempotent transition, reconnect state
+- teacher scope, student enrollment scope, archived-session denial
+- anonymous teacher answer projection and student aggregate projection
+- locked submission guard is in server/content.ts and server/execution.ts
+- event-time recipient snapshot and notification idempotency
+- fake mailer retry/backoff, bounce, cancellation/suppression contract
+- email body redaction for hidden-test/API-key/email canaries
+
+Not tested here: Docker/Compose runtime, real SMTP, real SSE/WebSocket transport, or
+real external email delivery. Docker probe remains in phase3-docker-probe.txt.

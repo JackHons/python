@@ -1,0 +1,113 @@
+{
+  "scenario": "final-short-gate",
+  "date": "2026-08-20",
+  "environment": {
+    "isolatedComposeProject": "functional-test",
+    "isolatedBaseUrl": "http://127.0.0.1:3100",
+    "latestBackendAndWebImages": true,
+    "liveComposeTouched": false,
+    "liveVolumesDeleted": false,
+    "credentialsPrinted": false,
+    "piiRecorded": false
+  },
+  "teacherAssignmentRemoval": {
+    "withoutSubmission": {
+      "status": "PASS",
+      "http": 200,
+      "beforePositions": [0, 1, 2],
+      "afterPositions": [0, 1],
+      "middleQuestionRemoved": true
+    },
+    "withSubmission": {
+      "status": "PASS",
+      "http": 409,
+      "noPartialWrite": true,
+      "itemsUnchanged": true
+    }
+  },
+  "browserClickThrough": {
+    "teacherEditor": {
+      "status": "PASS",
+      "actions": ["login", "select question", "edit title", "save edit"],
+      "saveToastVisible": true,
+      "updatedTitleVisible": true
+    },
+    "studentJoin": {
+      "status": "PASS",
+      "actions": ["login", "open courses", "enter code", "join"],
+      "joinedCourseVisible": true,
+      "joinErrorVisible": false
+    },
+    "practice": {
+      "status": "PASS",
+      "assignmentSnapshotVisible": true,
+      "pythonEditorVisible": true,
+      "stdinVisible": true,
+      "saveToastVisible": true,
+      "publicTestsVisible": true,
+      "hiddenTestsVisible": true,
+      "submitControlVisible": true
+    },
+    "viewports": [
+      { "width": 360, "height": 800, "authenticated": true, "practiceVisible": true, "horizontalOverflow": false },
+      { "width": 768, "height": 1024, "authenticated": true, "practiceVisible": true, "horizontalOverflow": false },
+      { "width": 1440, "height": 900, "authenticated": true, "practiceVisible": true, "horizontalOverflow": false }
+    ]
+  },
+  "apiRegression": {
+    "studentJoin": "PASS",
+    "duplicateJoin": "PASS",
+    "sevenQuestionTypesSaved": "PASS",
+    "stdinExecute": "PASS",
+    "publicDetails": "PASS",
+    "hiddenStatusOnly": "PASS",
+    "hiddenOutputOrTokenLeak": false,
+    "submit": "PASS"
+  },
+  "freshLoginUi": {
+    "hashedCssStatus": 200,
+    "viewports": {
+      "360": { "scrollWidth": 360, "cardWidth": 328, "cardMaxWidth": "480px", "horizontalOverflow": false },
+      "768": { "scrollWidth": 768, "cardWidth": 480, "horizontalOverflow": false },
+      "1440": { "scrollWidth": 1440, "cardWidth": 480, "cardMaxWidth": "480px", "horizontalOverflow": false }
+    },
+    "evidence": "docs/任務包/證據/student-demo-ui-evidence.txt"
+  },
+  "studentDemoApi": {
+    "provision": "PASS: idempotent, random credential stored only in .local-secrets/student-demo.json mode 0600",
+    "loginMeCoursesUnitsMaterialsAssignments": "PASS",
+    "startSubmission": "PASS",
+    "hiddenCasesExposed": 0
+  },
+  "security": {
+    "csrf": {
+      "status": "FAIL",
+      "severity": "P1",
+      "repro": "Authenticated POST through Gateway with Origin http://evil.invalid returned 200; expected 403 csrf_failed.",
+      "cause": "gateway/server.mjs:53-60 rewrites client Origin before backend guard.",
+      "recommendation": "Validate external Origin in Gateway before rewriting private upstream Origin."
+    },
+    "rbac": "PASS",
+    "hiddenCanary": "PASS"
+  },
+  "load": {
+    "existingHttpSmokeUsers": 40,
+    "courseReads": 40,
+    "materialReads": 40,
+    "grades200": 40,
+    "submits200": 40,
+    "hiddenCanaryLeaks": 0,
+    "browserTabs": "NOT_IMPLEMENTED"
+  },
+  "overall": {
+    "functionalShortGate": "PASS",
+    "release": "NO-GO",
+    "blockingGaps": ["CSRF P1", "40 browser tabs not implemented"]
+  },
+  "evidencePaths": [
+    "docs/任務包/功能測試報告.md",
+    "docs/任務包/證據/phase8b-compose-load.json",
+    "docs/任務包/證據/phase8b-ui-wiring.json",
+    "docs/任務包/證據/phase8-tests.txt"
+  ]
+}

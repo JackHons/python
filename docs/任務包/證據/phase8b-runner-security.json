@@ -1,0 +1,22 @@
+{
+  "scenario": "compose-runner-malicious-fixtures",
+  "blockedCapabilities": {
+    "network": 422,
+    "subprocess": 422,
+    "pip": 422
+  },
+  "timeout": {
+    "status": 200,
+    "timedOut": true
+  },
+  "outputLimit": {
+    "status": 200,
+    "outputLimited": true
+  },
+  "workdirFixture": {
+    "status": 200,
+    "canaryLeaked": false
+  },
+  "tokenLogged": false,
+  "note": "Executed inside the ARM64 runner container through its loopback endpoint; this proves the service contract and container path, not a disposable per-job sandbox."
+}

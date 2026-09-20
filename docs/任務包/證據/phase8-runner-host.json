@@ -1,0 +1,19 @@
+{
+  "scenario": "host-runner-malicious-and-40-concurrent",
+  "checks": {
+    "health": true,
+    "unauthorized": true,
+    "network_policy": true,
+    "subprocess_policy": true,
+    "pip_policy": true,
+    "timeout": true,
+    "output_limit": true,
+    "bounded_queue_observed": true
+  },
+  "statusCounts": {
+    "200": 18,
+    "429": 22
+  },
+  "successfulResponses": 18,
+  "note": "Host process with insecure no-privilege-drop override; Docker network/cgroup/ARM64 isolation is not verified."
+}

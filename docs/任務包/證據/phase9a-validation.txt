@@ -1,0 +1,57 @@
+Phase 9A validation evidence
+Date/time zone: 2026-08-23 Asia/Macau
+Workspace: /Users/hon/Documents/ChatGPT/學習平台
+
+Scope and data safety
+- No destructive migration was added.
+- Real .env, .data, .local-secrets, Docker volumes and user PPT source were not modified or deleted.
+- Content and HTTP tests used in-memory or temporary SQLite/storage except the existing read-only real-PPTX fixture verification.
+
+Targeted security and policy tests
+1. node --experimental-strip-types --test tests/gateway-csrf.integration.test.mjs
+   PASS 1/1: evil Origin rejected before forwarding; same-origin and internal-token contracts verified.
+2. node --experimental-strip-types --test tests/phase9a.integration.test.mjs
+   PASS 4/4: draft/archived known-ID scope; schedule/late/attempt/release policies; independent score/test-result policy false-value roundtrip; account scope/session revoke; test-result release.
+   Combined with tests/phase9a-ui.contract.test.mjs: PASS 5/5. The teacher UI owns two independent controls and sends their current values instead of forcing true.
+3. node --experimental-strip-types --test tests/assignments.integration.test.mjs tests/execution.integration.test.mjs tests/materials.integration.test.mjs tests/gateway-csrf.integration.test.mjs
+   PASS 15/15 in the final targeted group.
+4. /usr/bin/python3 -m unittest services.runner.tests.test_runner
+   Runtime: macOS system Python 3.9.6. PASS 12/12 in 1.446s: stdin/time/output/auth/queue/security plus secure Python 3.9 stdlib fallback and course package allowlist.
+5. /Users/hon/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest services.runner.tests.test_runner
+   Runtime: bundled Python 3.12.13. PASS 12/12 in 1.295s using sys.stdlib_module_names.
+6. Docker image runner test (read-only tests bind-mounted into the rebuilt image)
+   Runtime: python:3.12-slim-bookworm. PASS 12/12 in 1.374s. Image rebuilt from the repaired server.py before the test and live runner recreate.
+
+Complete regression
+- Command: node --experimental-strip-types --test tests/**/*.test.mjs
+- Result: PASS 62/62; fail 0; skipped 0; duration 7552.873 ms in the recorded final `pnpm test:all` run.
+- Command: pnpm test:all
+- Result: PASS 62/62; fail 0.
+
+Static and build gates
+- pnpm exec tsc --noEmit: PASS.
+- pnpm exec eslint . --ignore-pattern dist --ignore-pattern .next: PASS, 0 errors.
+- pnpm build: PASS; Vinext completed all five build environments.
+- sh -n scripts/smoke-test-compose.sh: PASS.
+- git diff --check: PASS for tracked changes; repository has no reliable commit baseline for a complete historical diff.
+
+Docker / actual Gateway
+- docker compose config --quiet: PASS.
+- Phase 9A compatibility rebuilds: runner PASS; web PASS. Earlier gateway/backend images were retained because this bounded repair did not change them.
+- No-dependency recreate/up: runner and web PASS; no volume deletion command used.
+- scripts/smoke-test-compose.sh: PASS after updating the Runner smoke request to declare the server-approved NumPy/Pandas/Matplotlib allowlist.
+- docker compose ps: gateway/backend/web/runner all healthy; runner has no published host port; gateway remains at http://localhost:3000.
+- Actual host -> Gateway mutation probes:
+  evil_origin=403
+  same_origin_forwarded=401 (expected invalid-login response from backend, proving forwarding)
+- Backend /ready smoke verifies SQLite integrity=ok and foreignKeys=1.
+
+Clean install / dependency note
+- Docker backend npm ci completed with 484 packages.
+- npm reported 20 dependency vulnerabilities: 1 low, 4 moderate, 15 high. No automatic --force update was applied because it can introduce breaking changes and dependency remediation was outside this bounded repair. This remains a release risk requiring package-by-package review.
+
+Honest non-gates / remaining work
+- No true AI vendor, SMTP transport or PPT conversion worker was configured.
+- 40 real browser tabs were not run in Phase 9A; earlier 40-user HTTP load is not represented as browser proof.
+- Long-lived Runner container remains an MVP isolation boundary, not a disposable per-job strong sandbox.
+- Full live-class UI, AI assistant/review UI, analytics/export centre, backup/audit UI, exam mode, similarity detection and real gamification remain partial/missing as listed in 09-Phase-9-缺口清單與核心閉環.md.

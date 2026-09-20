@@ -1,0 +1,22 @@
+Phase 8 security/static scan
+
+Commands:
+rg -n 'BACKEND_INTERNAL_TOKEN|RUNNER_SERVICE_TOKEN|AI_MASTER_KEY' app public worker dist .next 2>/dev/null || true
+rg -n 'HIDDEN_INPUT_CANARY|HOST_HIDDEN_CANARY' app public worker dist .next 2>/dev/null || true
+rg -n 'node_modules|\.env|dist' .dockerignore
+
+Expected/observed policy:
+- Server-only tokens are not intentionally imported by app/public code; runtime
+  values are supplied to backend/worker containers only.
+- Hidden canaries are only test fixtures; host load reported 0 student payload leaks.
+- `.dockerignore` excludes `.env`, node_modules, dist, and runner source from the
+  web/backend build context where appropriate; runner has its own build context.
+
+Full authenticated route/RBAC/CSRF/hidden-test/backup tests are recorded in
+phase7-tests.txt and phase8-host-load.json. This file is a scan record, not a
+claim that a Docker image or external provider was tested.
+
+Reproducible command:
+PATH=/Users/hon/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin:$PATH sh scripts/phase8-security-scan.sh
+Result: 7 security tests passed; hidden canary bundle scan passed. Token-name
+matches are server-side configuration identifiers, not secret values.

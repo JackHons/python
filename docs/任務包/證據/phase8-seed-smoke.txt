@@ -1,0 +1,12 @@
+Seed credential smoke
+
+Command:
+/Users/hon/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --experimental-strip-types scripts/seed-demo-smoke.mjs
+
+Result:
+{"firstSeed":"ok","mode":"0600","overwrite":"rejected","production":"disabled"}
+
+The temporary credential file was created outside the repository and removed by
+the smoke process. The product seed requires `SEED_CREDENTIALS_FILE`, writes
+once with mode 0600, preserves first-login password change, and never prints
+the password.

@@ -1,0 +1,90 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1787170344929,
+      "tag": "0000_odd_callisto",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1787173589783,
+      "tag": "0001_melodic_jane_foster",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1787174848090,
+      "tag": "0002_cooing_infant_terrible",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1787175985571,
+      "tag": "0003_thick_nekra",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1787177923545,
+      "tag": "0004_premium_ironclad",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1787178912040,
+      "tag": "0005_late_power_pack",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1787179071185,
+      "tag": "0006_cultured_blue_shield",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1787475463993,
+      "tag": "0007_boring_kree",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1787484867637,
+      "tag": "0008_moaning_nemesis",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1787485409170,
+      "tag": "0009_absent_war_machine",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1787495309121,
+      "tag": "0010_rainy_bloodstrike",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1787495840926,
+      "tag": "0011_nifty_vengeance",
+      "breakpoints": true
+    }
+  ]
+}

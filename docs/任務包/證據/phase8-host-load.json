@@ -1,0 +1,29 @@
+{
+  "scenario": "host-http-40-users",
+  "users": 40,
+  "totalRequests": 242,
+  "gradeSubmitElapsedMs": 80.82,
+  "p50Ms": 19.06,
+  "p95Ms": 877.62,
+  "maxMs": 1248.59,
+  "gradeStatuses": {
+    "200": 40
+  },
+  "submitStatuses": {
+    "200": 40
+  },
+  "hiddenCanaryLeaks": 0,
+  "analyticsStatus": 200,
+  "courseReadStatuses": {
+    "200": 40
+  },
+  "materialReadStatuses": {
+    "200": 40
+  },
+  "database": {
+    "integrity": "ok",
+    "foreignKeys": 1,
+    "distinctRunStudents": 40
+  },
+  "note": "Host HTTP + injected fake runner; Docker network/cgroup isolation and real AI quota are not measured here."
+}

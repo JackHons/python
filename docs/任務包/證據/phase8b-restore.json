@@ -1,0 +1,9 @@
+{
+  "scenario": "compose-isolated-restore",
+  "backupId": "c13d525f-4afb-4fbf-97e3-ac51e82253ee",
+  "targetIsolated": true,
+  "foreignKeys": 1,
+  "integrity": "ok",
+  "violations": [],
+  "note": "Restored into backend /tmp tmpfs target; live database was not overwritten."
+}

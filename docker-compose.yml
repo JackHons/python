@@ -1,0 +1,295 @@
+name: python-learning-platform
+
+services:
+  gateway:
+    build:
+      context: gateway
+      dockerfile: Dockerfile
+    environment:
+      NODE_ENV: production
+      GATEWAY_PORT: "3000"
+      BACKEND_URL: http://backend:8787
+      WEB_URL: http://web:3000
+      PUBLIC_ORIGINS: "${PUBLIC_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}"
+      BACKEND_INTERNAL_TOKEN: "${BACKEND_INTERNAL_TOKEN:?Set BACKEND_INTERNAL_TOKEN (24+ chars) in .env}"
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+      web:
+        condition: service_healthy
+    init: true
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777
+    pids_limit: 128
+    mem_limit: 256m
+    cpus: 1.0
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/health').then(r => r.ok ? r.json() : Promise.reject()).catch(() => process.exit(1))"
+      interval: 10s
+      timeout: 4s
+      retries: 10
+      start_period: 10s
+    networks:
+      - web
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      NODE_ENV: production
+      ALLOW_LEGACY_RUN: "false"
+    depends_on:
+      backend:
+        condition: service_healthy
+    init: true
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=128m,mode=1777
+    pids_limit: 256
+    mem_limit: 1g
+    cpus: 2.0
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/').then(r => { if (!r.ok) process.exit(1) }).catch(() => process.exit(1))"
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 20s
+    networks:
+      - web
+
+  runner:
+    build:
+      context: services/runner
+      dockerfile: Dockerfile
+    environment:
+      RUNNER_HOST: 0.0.0.0
+      RUNNER_PORT: "8080"
+      RUNNER_MAX_CODE_BYTES: "102400"
+      RUNNER_MAX_INPUT_BYTES: "65536"
+      RUNNER_MAX_REQUEST_BYTES: "196608"
+      RUNNER_MAX_OUTPUT_BYTES: "65536"
+      RUNNER_MAX_TIMEOUT_MS: "5000"
+      RUNNER_DEFAULT_TIMEOUT_MS: "3000"
+      RUNNER_MAX_CONCURRENCY: "4"
+      RUNNER_MEMORY_MB: "768"
+      RUNNER_MAX_FILE_BYTES: "5242880"
+      RUNNER_CHILD_PROCESS_COUNT: "32"
+      RUNNER_SANDBOX_UID: "10001"
+      RUNNER_SANDBOX_GID: "10001"
+      RUNNER_DROP_PRIVILEGES: "1"
+      RUNNER_REQUEST_TIMEOUT_MS: "3000"
+      RUNNER_SERVICE_TOKEN: "${RUNNER_SERVICE_TOKEN:?Set RUNNER_SERVICE_TOKEN (24+ chars) in .env}"
+    init: true
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=256m,mode=1777
+    pids_limit: 256
+    mem_limit: 2g
+    cpus: 4.0
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - KILL
+      - SETGID
+      - SETUID
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=2)"
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    networks:
+      - runner-internal
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["npm", "run", "backend"]
+    environment:
+      NODE_ENV: production
+      BACKEND_PORT: "8787"
+      BACKEND_HOST: 0.0.0.0
+      BACKEND_INTERNAL_TOKEN: "${BACKEND_INTERNAL_TOKEN:?Set BACKEND_INTERNAL_TOKEN (24+ chars) in .env}"
+      DATABASE_PATH: /data/db/learning.sqlite
+      STORAGE_ROOT: /data/storage
+      EXPORT_STORAGE_ROOT: /data/exports
+      BACKUP_ROOT: /data/backups
+      BACKUP_ENABLED: "${BACKUP_ENABLED:-false}"
+      BACKUP_RETENTION_DAYS: "${BACKUP_RETENTION_DAYS:-30}"
+      PYTHON_RUNNER_URL: http://runner:8080
+      PYTHON_RUNNER_TOKEN: "${RUNNER_SERVICE_TOKEN:?Set RUNNER_SERVICE_TOKEN (24+ chars) in .env}"
+      AI_MASTER_KEY: "${AI_MASTER_KEY:?Set AI_MASTER_KEY in .env}"
+    volumes:
+      - backend-db:/data/db
+      - backend-storage:/data/storage
+      - backend-exports:/data/exports
+      - backend-backups:/data/backups
+    depends_on:
+      runner:
+        condition: service_healthy
+    init: true
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=128m,mode=1777
+    pids_limit: 256
+    mem_limit: 1g
+    cpus: 2.0
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:8787/ready').then(r => r.ok ? r.json() : Promise.reject()).then(x => x.status === 'ok' || Promise.reject()).catch(() => process.exit(1))"
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 20s
+    networks:
+      - web
+      - runner-internal
+
+  converter:
+    build:
+      context: .
+      dockerfile: services/converter/Dockerfile
+    environment:
+      DATABASE_PATH: /data/db/learning.sqlite
+      STORAGE_ROOT: /data/storage
+      MAX_UPLOAD_BYTES: "26214400"
+      CONVERTER_TIMEOUT_MS: "120000"
+      CONVERTER_MAX_PAGES: "100"
+      CONVERTER_MAX_OUTPUT_BYTES: "26214400"
+      CONVERTER_RENDER_DPI: "120"
+    volumes:
+      - backend-db:/data/db
+      - backend-storage:/data/storage
+    depends_on:
+      backend:
+        condition: service_healthy
+    init: true
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=512m,mode=1777
+    pids_limit: 256
+    mem_limit: 2g
+    cpus: 2.0
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "test", "-f", "/tmp/converter-ready"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 30s
+    network_mode: none
+
+  email-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["npm", "run", "email-worker"]
+    environment:
+      DATABASE_PATH: /data/db/learning.sqlite
+      EMAIL_ENABLED: "${EMAIL_ENABLED:-false}"
+      EMAIL_FROM: "${EMAIL_FROM:-python-learning@example.invalid}"
+      SMTP_HOST: "${SMTP_HOST:-}"
+      SMTP_PORT: "${SMTP_PORT:-1025}"
+      SMTP_TLS_MODE: "${SMTP_TLS_MODE:-none}"
+      SMTP_USERNAME: "${SMTP_USERNAME:-}"
+      SMTP_PASSWORD: "${SMTP_PASSWORD:-}"
+      AI_MASTER_KEY: "${AI_MASTER_KEY:?Set AI_MASTER_KEY in .env}"
+    volumes:
+      - backend-db:/data/db
+    depends_on:
+      backend:
+        condition: service_healthy
+    init: true
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777
+    pids_limit: 128
+    mem_limit: 256m
+    cpus: 0.5
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "test", "-f", "/tmp/email-worker-ready"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 20s
+    networks:
+      - web
+
+  mailpit:
+    image: axllent/mailpit:v1.27
+    profiles: ["smtp-test"]
+    ports:
+      - "${MAILPIT_WEB_PORT:-8025}:8025"
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777
+      - /data:rw,nosuid,nodev,size=128m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    networks:
+      - web
+
+networks:
+  web:
+    driver: bridge
+  runner-internal:
+    driver: bridge
+    internal: true
+
+volumes:
+  backend-db:
+  backend-storage:
+  backend-exports:
+  backend-backups:

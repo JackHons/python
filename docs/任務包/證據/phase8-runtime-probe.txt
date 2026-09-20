@@ -1,0 +1,12 @@
+Phase 8 runtime probe
+Date: 2026-08-20 Asia/Macau
+Working directory: /Users/hon/Documents/ChatGPT/學習平台
+
+Command:
+for x in docker docker-compose podman colima finch nerdctl lima; do command -v "$x" || true; done
+
+Observed output:
+(empty)
+
+Conclusion:
+No container engine or Docker-compatible CLI is available in this environment. No system-level installation, VM setup, or host configuration change was attempted. Docker Compose build/start/health/network/cgroup/ARM64 evidence is therefore BLOCKED and must not be described as verified. Host-only HTTP, runner, static Compose, and application test substitutes are allowed, with their boundaries recorded separately.

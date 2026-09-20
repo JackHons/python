@@ -1,0 +1,12 @@
+Phase 8 static Compose check (re-run after Docker/Colima setup)
+
+Command:
+ruby -e 'require "yaml"; d=YAML.load_file("docker-compose.yml"); p d["services"].keys; abort "runner host port" if d["services"]["runner"]["ports"]; abort "missing volumes" unless d["services"]["backend"]["volumes"].length == 4; puts "compose-static=ok"'
+
+Output:
+["gateway", "web", "runner", "backend"]
+compose-static=ok; gateway is the only published web port; runner has no host port
+
+This is YAML/static structure evidence only. Live Docker/Colima build, health,
+volume persistence and ARM64 evidence is recorded in phase8b-runtime-setup.txt;
+runner strong sandbox and long-duration cgroup/egress guarantees remain out of scope.

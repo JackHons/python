@@ -1,0 +1,48 @@
+Phase 11 validation evidence
+Date: 2026-09-17 Asia/Macau
+Branch: codex/phase11-role-routing
+Baseline: 09dd0e1048ee73b3f567c816bd5283ac563f1cc3
+HEAD: 6e49bff (docs; product code b4a4dc7878dcf6268ee4cfd194ef61aeaa3dc5ff)
+
+Safety boundary
+- All implementation and tests used the Phase 11 worktree or an explicitly isolated worker worktree.
+- Main baseline worktree remained clean.
+- No live database, Docker volume, .env, .local-secrets, or user PPT was modified.
+- Isolated Docker projects used temporary secrets and volumes; no `docker compose down -v` was used.
+- No browser visual QA or 40-tab browser test was performed.
+
+Current implementation commits
+- `129b78d` revalidates student execution snapshot/execute/grade/getRun scope after withdrawal or course/archive changes.
+- `b4a4dc7` revalidates AI conversation course/enrollment/assignment/question/unit scope before provider use.
+
+Post-fix targeted gates
+- Route/API targeted suite on `129b78d`: PASS 34/34; method-specific 405/Allow, role 403, out-of-scope/archived/enrollment 404, deep links, AI/hints/classroom/files.
+- Backend security recheck on `b4a4dc7`: PASS 31/31; execution and AI scope P1s closed, classroom transaction/idempotency, hint immutability, file conflicts, provider redaction, request IDs, migration integrity.
+- AI/security parent recheck: PASS 18/18 local worker and 10/10 parent targeted checks.
+- `pnpm exec tsc --noEmit`: PASS.
+- `pnpm lint`: PASS.
+- `pnpm build`: PASS; canonical student/teacher/admin routes and catch-all API emitted.
+- `git diff --check 09dd0e1..HEAD`: PASS.
+
+Full current gate
+- `pnpm test:all`: PASS 95, 0 fail, 2 skipped (97 total). The skipped tests are the two real-PPTX cases requiring operator-provided `PPTX_FIXTURE_PATH`; no user PPT was read.
+
+Latest isolated Docker gate (`b4a4dc7`)
+- Compose config: PASS (`exit=0`), six services runner/backend/web/converter/email-worker/gateway.
+- Sequential clean build: PASS 6/6.
+- `up -d --no-build`: PASS; all six services healthy.
+- Smoke script: PASS (`exit=0`) for Gateway/web, backend readiness, authenticated-API gate, legacy route and Python runner.
+- Gateway: `/health` 200; evil Origin mutation 403 `csrf_failed`; same-origin unauthenticated login 401 `invalid_credentials`; no-Origin mutation 403.
+- Container hardening observed: all read-only, converter `network=none`, runner internal-only port, gateway only host-published service.
+- Project `phase11-docker-recheck-b4a4dc7-20260917`, temporary env `/tmp/phase11-docker-recheck-b4a4dc7.4EvMXw/compose.env`, host port 3330; containers stopped afterward, temporary volumes retained, live project untouched.
+
+Historical evidence (not rerun in this continuation)
+- System Python 3.9, bundled Python 3.12, Docker Runner 3.12 matrices: historical Phase 11 evidence, not claimed as rerun here.
+- `phase8-security-scan.sh` and dependency installation observations remain historical evidence; clean install previously reported application 20 findings and converter 1 high finding. No force update was applied.
+
+Known boundaries and risks
+- Route protection is client session probing plus backend API RBAC; it is not claimed as SSR first-response HTTP 403.
+- Local fake HTTP AI proves adapter behavior but is not a configured school vendor.
+- No real PPT fixture, browser screenshot, or large browser concurrency test was run in this continuation.
+- Queued conversion, local SMTP, client guard, and long-lived Runner remain MVP boundaries and are not described as production-grade conversion, email, SSR authorization, or strong sandboxing.
+- Phase 11 is not merged, tagged, or pushed; live Compose was not rebuilt or recreated.

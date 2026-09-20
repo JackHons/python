@@ -1,0 +1,43 @@
+Phase 6 evidence (2026-08-20)
+
+P6 command:
+node --experimental-strip-types --test \
+  tests/analytics.integration.test.mjs \
+  tests/export.excel.test.mjs \
+  tests/export.pdf.test.mjs \
+  tests/audit.integration.test.mjs \
+  tests/backup.restore.test.mjs
+Result: 5 passed, 0 failed.
+
+Regression:
+- Phase 1: 5 passed, 0 failed
+- Phase 2: 8 passed, 0 failed
+- Phase 3: 6 passed, 0 failed
+- Phase 4: 8 passed, 0 failed
+- Phase 5: 5 passed, 0 failed
+- TypeScript: tsc --noEmit passed
+- ESLint: passed
+- drizzle-kit check: Everything's fine
+- Fresh SQLite migration: foreign_keys=1, integrity=ok, foreign_key_check=[]
+- vinext build: Build complete
+
+Export evidence:
+- XLSX opened with xlsx parser; _metadata/data sheets present; SHA-256 recorded;
+  formula-like course title became a quoted text cell.
+- PDF starts with %PDF-1.4, has SnapshotAt/Asia-Macau metadata and %%EOF.
+- Export jobs persist report version, snapshotAt, timezone, scope/filter, data snapshot,
+  SHA-256, byte size, expiry and correlation id.
+
+Backup evidence:
+- Scheduled backup skipped while switch disabled.
+- Full file-backed SQLite backup created with manifest/checksum.
+- Ready asset restored; quarantine asset excluded.
+- Restore copied only to empty isolated directory and passed foreign_keys/integrity checks.
+- Current database restore target was rejected.
+
+Known non-evidence:
+- No Docker/Compose runtime in this environment.
+- PDF uses built-in Helvetica ASCII fallback; Chinese glyph rendering is not claimed
+  until a CJK font is supplied and verified in the target image.
+- No production object storage or scheduled process is wired; services expose the
+  asynchronous job/backup contracts for later API/deployment integration.

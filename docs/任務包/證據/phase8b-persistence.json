@@ -1,0 +1,8 @@
+{
+  "scenario": "compose-restart-persistence",
+  "loginStatus": 200,
+  "coursesStatus": 200,
+  "coursesCount": 1,
+  "credentialOrSecretLogged": false,
+  "note": "Verified after docker compose restart; password is supplied only through the process environment and is not written to the report."
+}

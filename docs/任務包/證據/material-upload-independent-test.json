@@ -1,0 +1,136 @@
+{
+  "report": "教材上傳功能獨立測試",
+  "date": "2026-08-23",
+  "executor": "independent luna_worker test run",
+  "scope": "isolated in-memory SQLite database and temporary storage; live Docker volume was not used or modified",
+  "fixture": {
+    "file": "/Users/hon/Documents/ChatGPT/PPT/projects/python_ch02_basics_ppt169_20260820/exports/python_ch02_basics_20260820_045200_narrated.pptx",
+    "bytes": 2572119,
+    "sha256": "1d9ef8a46d0672c59eca58b44d9cd3b54dd3e9a0cf34f8e98d686e8817805384",
+    "mime": "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+  },
+  "matrix": [
+    {
+      "id": "1-upload-quarantine-release",
+      "status": "PASS",
+      "evidence": "Real PPTX was quarantined, released to ready, and exposed only safe metadata; storage_key was absent from the projection."
+    },
+    {
+      "id": "2-dedup-and-scope",
+      "status": "PASS",
+      "evidence": "Same-owner re-upload returned deduplicated=true and one SHA row; a different owner could not use a private asset, then could see/use it after school scope."
+    },
+    {
+      "id": "3-course-unit-binding-publication",
+      "status": "PASS",
+      "evidence": "Two materials in two courses referenced the same asset; draft materials were hidden and published materials were visible to the enrolled student."
+    },
+    {
+      "id": "4-download-policy",
+      "status": "PASS",
+      "evidence": "Allowed download bytes, size and SHA matched the fixture; allowDownload=false and an unenrolled student were denied; unsafe filename was rejected."
+    },
+    {
+      "id": "5-rbac",
+      "status": "PASS",
+      "evidence": "Student library listing and asset binding were denied; teacher/admin scope behavior was enforced."
+    },
+    {
+      "id": "6-malformed-and-limits",
+      "status": "PASS",
+      "evidence": "Forged PPTX/DOCX/PDF/ZIP, MIME-extension mismatch, path-like filename, empty signature and over-25MiB payloads were rejected. No malformed asset reached ready status. HTTP invalid/canonical-empty base64 returned 400 invalid_base64 with zero asset rows."
+    },
+    {
+      "id": "7-conversion-queue-honesty",
+      "status": "PASS",
+      "evidence": "After the fix, isolated real Backend HTTP POST conversion returned 202 queued with output_asset_id=null; GET conversion status returned 200 with queued, output_asset_id=null, started_at=null and finished_at=null. No SQLite column error, updated_at or completed_at field, preview URL, or successful-preview claim was returned."
+    },
+    {
+      "id": "8-ui-contract",
+      "status": "PARTIAL",
+      "evidence": "Source/rendered contract and production build verified teacher material library/course selection controls, file accept list, progress/error/retry selectors, scope, bilingual metadata, allowDownload, draft/publish and honest waiting-for-conversion copy. Full authenticated browser upload interaction was not claimed in this independent run."
+    },
+    {
+      "id": "9-regression-and-runtime",
+      "status": "PASS",
+      "evidence": "Personally rerun: targeted phase2 14/14, full regression 55/55, TypeScript noEmit, ESLint, Vinext build, docker compose health and compose smoke."
+    }
+  ],
+  "independent_service_checks": {
+    "pass": 21,
+    "fail": 0,
+    "ready_asset_count": 1,
+    "file_asset_count": 6,
+    "storage_isolation": "temporary directory removed after run",
+    "live_data_touched": false
+  },
+  "conversion_http_recheck": {
+    "status": "PASS",
+    "isolation": "temporary SQLite file and temporary storage removed after run",
+    "flow": "course -> unit -> material -> POST /materials/:id/conversion -> GET /materials/:id/conversion",
+    "post": { "httpStatus": 202, "jobStatus": "queued", "outputAssetId": null },
+    "get": { "httpStatus": 200, "jobStatus": "queued", "outputAssetId": null, "startedAt": null, "finishedAt": null, "sqliteColumnError": false },
+    "listProjection": { "conversionStatus": "queued", "previewClaimed": false }
+  },
+  "http_checks": {
+    "invalid_base64": { "status": 400, "code": "invalid_base64" },
+    "empty_base64": { "status": 400, "code": "invalid_base64" },
+    "asset_rows_after_rejections": 0
+  },
+  "quality_checks": {
+    "targeted_phase2": "14/14 passed",
+    "full_regression": "55/55 passed",
+    "conversion_status_route": "POST 202 + GET 200 rechecked independently",
+    "typescript": "passed",
+    "eslint": "passed",
+    "vinext_build": "passed",
+    "compose_services": "gateway, web, backend, runner healthy",
+    "compose_smoke": "passed"
+  },
+  "resolved_defects": [
+    {
+      "severity": "P1",
+      "title": "Conversion status endpoint selected columns absent from migration schema",
+      "status": "RESOLVED_AND_RECHECKED",
+      "recheck": "Real Backend HTTP flow in an isolated database returned POST 202 and GET 200; queued output and timestamps were null and no SQLite column error occurred."
+    }
+  ],
+  "defects": [
+    {
+      "severity": "P2",
+      "title": "Authenticated browser upload flow not claimed by this run",
+      "reproduction": "N/A; test boundary rather than confirmed product failure.",
+      "observed": "Source/rendered contracts and build passed; no stored credential was entered and no live data was changed.",
+      "impact": "The teacher upload UI still needs a deliberate authenticated browser acceptance pass before formal UI sign-off."
+    },
+    {
+      "severity": "P2",
+      "title": "Buildx session-header environment risk",
+      "reproduction": "Parallel docker compose build can hit a BuildKit session-header error; sequential/legacy-builder build succeeded.",
+      "observed": "Environment/tooling issue, not a material-library behavior failure.",
+      "impact": "CI/local image build should retain a sequential fallback until the Buildx runtime is corrected."
+    }
+  ],
+  "known_limitations": [
+    "PPT/PPTX conversion worker is not configured; queued/waiting status is expected and must not be shown as a successful preview.",
+    "No secrets, tokens or personal credentials are included in this evidence."
+  ],
+  "evidence_provenance": {
+    "personally_executed": [
+      "inline isolated MaterialService matrix",
+      "inline isolated BackendApp invalid-base64 checks",
+      "inline isolated Backend HTTP course/unit/material/conversion recheck",
+      "pnpm run test:phase2",
+      "pnpm run test:all",
+      "pnpm exec tsc --noEmit",
+      "pnpm run lint",
+      "pnpm run build",
+      "docker compose ps",
+      "sh scripts/smoke-test-compose.sh"
+    ],
+    "inherited_or_not_used": [
+      "No prior worker conclusion was used as proof for the matrix.",
+      "No live-volume browser credential test was used as proof."
+    ]
+  }
+}

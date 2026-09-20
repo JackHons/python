@@ -1,0 +1,50 @@
+{
+  "checkedAt": "2026-09-18T17:19:17.970Z",
+  "before": {
+    "integrity": "ok",
+    "foreignKeyViolations": 0,
+    "users": 49,
+    "courses": 2,
+    "assets": 0,
+    "migrations": [
+      "0000_odd_callisto",
+      "0001_melodic_jane_foster",
+      "0002_cooing_infant_terrible",
+      "0003_thick_nekra",
+      "0004_premium_ironclad",
+      "0005_late_power_pack",
+      "0006_cultured_blue_shield",
+      "0007_boring_kree",
+      "0008_moaning_nemesis",
+      "0009_absent_war_machine"
+    ]
+  },
+  "after": {
+    "integrity": {
+      "foreignKeys": 1,
+      "integrity": "ok",
+      "violations": []
+    },
+    "users": 49,
+    "courses": 2,
+    "assets": 0,
+    "migrations": [
+      "0000_odd_callisto",
+      "0001_melodic_jane_foster",
+      "0002_cooing_infant_terrible",
+      "0003_thick_nekra",
+      "0004_premium_ironclad",
+      "0005_late_power_pack",
+      "0006_cultured_blue_shield",
+      "0007_boring_kree",
+      "0008_moaning_nemesis",
+      "0009_absent_war_machine",
+      "0010_rainy_bloodstrike",
+      "0011_nifty_vengeance"
+    ]
+  },
+  "migrationImage": "phase11-docker-recheck-b4a4dc7-20260917-backend:latest",
+  "method": "independent writable snapshot copy; live volumes were never mounted; helper had no network",
+  "originalSnapshotKeptUnmigrated": true,
+  "originalPptIncluded": true
+}

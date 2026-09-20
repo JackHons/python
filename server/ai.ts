@@ -1,0 +1,516 @@
+/* eslint-disable @typescript-eslint/no-explicit-any -- SQLite rows are runtime-shaped and provider payloads are intentionally validated at boundaries. */
+import { createCipheriv, createDecipheriv, randomBytes, randomUUID } from "node:crypto";
+import type { Actor } from "./education.ts";
+import type { LocalDatabase } from "./db.ts";
+import { DomainError } from "./errors.ts";
+
+const STAFF = new Set(["admin", "teacher"]);
+const PURPOSES = new Set(["student_hint", "translation", "question_generation", "grading", "summary", "feedback"]);
+const ARTIFACT_TYPES = new Set(["material", "translation", "question", "feedback", "suggested_score"]);
+type Clock = () => Date;
+
+function iso(clock: Clock) { return clock().toISOString(); }
+function audit(db: LocalDatabase, actorId: string | null, action: string, entityType: string, entityId: string | null, result: "success" | "denied" | "failure", metadata: Record<string, unknown> = {}) {
+  db.run("INSERT INTO audit_logs (id, actor_id, action, entity_type, entity_id, result, metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?)", [randomUUID(), actorId, action, entityType, entityId, result, JSON.stringify(metadata)]);
+}
+function requireStaff(actor: Actor) {
+  if (!STAFF.has(actor.role)) throw new DomainError("forbidden", "Staff permission required", 403);
+}
+function parseJson(value: unknown, field: string) {
+  if (typeof value !== "string") return value;
+  try { return JSON.parse(value); } catch { throw new DomainError("invalid_json", field + " must be valid JSON"); }
+}
+function usageDate(clock: Clock, timezone: string) {
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", { timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(clock());
+    const values = Object.fromEntries(parts.filter((part) => ["year", "month", "day"].includes(part.type)).map((part) => [part.type, part.value]));
+    return String(values.year) + "-" + String(values.month) + "-" + String(values.day);
+  } catch {
+    throw new DomainError("invalid_timezone", "AI timezone is invalid");
+  }
+}
+function canManageCourse(db: LocalDatabase, actor: Actor, courseId: string) {
+  if (actor.role === "admin") return true;
+  if (actor.role !== "teacher") return false;
+  return Boolean(db.get("SELECT 1 FROM courses c WHERE c.id = ? AND (c.owner_teacher_id = ? OR EXISTS (SELECT 1 FROM course_class_assignments cca JOIN class_memberships cm ON cm.class_id = cca.class_id WHERE cca.course_id = c.id AND cm.user_id = ? AND cm.member_role = 'teacher' AND cm.status = 'active'))", [courseId, actor.id, actor.id]));
+}
+function canViewCourse(db: LocalDatabase, actor: Actor, courseId: string) {
+  const course = db.get<{ status: string }>("SELECT status FROM courses WHERE id = ?", [courseId]);
+  if (!course || course.status === "archived") return false;
+  if (actor.role === "admin") return true;
+  if (actor.role === "teacher") return canManageCourse(db, actor, courseId);
+  return course.status === "published" && Boolean(db.get("SELECT 1 FROM course_enrollments WHERE course_id = ? AND student_id = ? AND status = 'active'", [courseId, actor.id]));
+}
+
+export type ProviderMessage = { role: "system" | "user"; content: string };
+export type ProviderRequest = { model: string; messages: ProviderMessage[]; temperature?: number };
+export type ProviderResponse = { content: string; inputTokens: number; outputTokens: number; model?: string };
+export interface AiProvider { generate(request: ProviderRequest): Promise<ProviderResponse>; }
+
+export class FakeAiProvider implements AiProvider {
+  readonly calls: ProviderRequest[] = [];
+  private readonly responder: (request: ProviderRequest) => Promise<ProviderResponse> | ProviderResponse;
+  constructor(responder: (request: ProviderRequest) => Promise<ProviderResponse> | ProviderResponse = async () => ({ content: "fake hint", inputTokens: 10, outputTokens: 5, model: "fake-model" })) { this.responder = responder; }
+  async generate(request: ProviderRequest) {
+    this.calls.push(request);
+    return await this.responder(request);
+  }
+}
+
+export class OpenAICompatibleProvider implements AiProvider {
+  private readonly baseUrl: string;
+  private readonly apiKey: string;
+  private readonly model: string;
+  private readonly fetcher: typeof fetch;
+  private readonly apiPath: string;
+  private readonly timeoutMs: number;
+  constructor(baseUrl: string, apiKey: string, model: string, fetcher: typeof fetch = fetch, apiPath = "/chat/completions", timeoutMs = 15000) {
+    const url = new URL(baseUrl);
+    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) throw new DomainError("invalid_provider_url", "AI provider URL must use HTTP(S) without embedded credentials");
+    if (!apiPath.startsWith("/") || apiPath.startsWith("//") || apiPath.length > 256) throw new DomainError("invalid_provider_path", "AI provider path is invalid");
+    if (!Number.isInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 120000) throw new DomainError("invalid_provider_timeout", "AI provider timeout must be between 1000 and 120000 ms");
+    this.baseUrl = url.toString().replace(/\/$/, ""); this.apiKey = apiKey; this.model = model; this.fetcher = fetcher; this.apiPath = apiPath; this.timeoutMs = timeoutMs;
+  }
+  async generate(request: ProviderRequest) {
+    if (!this.apiKey.trim()) throw new DomainError("provider_unavailable", "AI provider key is unavailable", 503);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    let response: Response;
+    try {
+      response = await this.fetcher(this.baseUrl + this.apiPath, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: "Bearer " + this.apiKey },
+        body: JSON.stringify({ model: request.model || this.model, messages: request.messages, temperature: request.temperature ?? 0.2 }),
+        signal: controller.signal,
+      });
+    } catch {
+      if (controller.signal.aborted) throw new DomainError("provider_timeout", "AI provider request timed out", 504);
+      throw new DomainError("provider_unreachable", "AI provider could not be reached", 502);
+    } finally { clearTimeout(timer); }
+    if (!response.ok) {
+      if (response.status === 429) throw new DomainError("provider_busy", "AI provider is busy", 429);
+      if (response.status >= 500) throw new DomainError("provider_failed", "AI provider request failed", 502);
+      if (response.status === 401 || response.status === 403) throw new DomainError("provider_auth_failed", "AI provider rejected its server credential", 502);
+      throw new DomainError("provider_failed", "AI provider request failed", 502);
+    }
+    const payload = await response.json() as Record<string, any>;
+    const content = payload.choices?.[0]?.message?.content;
+    if (typeof content !== "string") throw new DomainError("provider_protocol", "AI provider returned an invalid response", 502);
+    return { content, inputTokens: Number(payload.usage?.prompt_tokens ?? 0), outputTokens: Number(payload.usage?.completion_tokens ?? 0), model: String(payload.model ?? request.model ?? this.model) };
+  }
+}
+
+export class MasterKeyCipher {
+  private readonly key: Buffer;
+  readonly version = 1;
+  constructor(masterKey: string | Uint8Array | undefined) {
+    if (!masterKey) throw new DomainError("ai_master_key_missing", "AI master key is not configured", 503);
+    const raw = typeof masterKey === "string" ? (masterKey.match(/^[0-9a-fA-F]{64}$/) ? Buffer.from(masterKey, "hex") : Buffer.from(masterKey, "base64")) : Buffer.from(masterKey);
+    if (raw.length !== 32) throw new DomainError("ai_master_key_invalid", "AI master key must be 32 bytes", 503);
+    this.key = raw;
+  }
+  encrypt(plaintext: string) {
+    const iv = randomBytes(12);
+    const cipher = createCipheriv("aes-256-gcm", this.key, iv);
+    const ciphertext = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
+    return ["v1", Buffer.from(iv).toString("base64url"), Buffer.from(cipher.getAuthTag()).toString("base64url"), Buffer.from(ciphertext).toString("base64url")].join(".");
+  }
+  decrypt(value: string) {
+    const [version, ivValue, tagValue, ciphertextValue] = value.split(".");
+    if (version !== "v1" || !ivValue || !tagValue || !ciphertextValue) throw new DomainError("ai_key_invalid", "AI provider key cannot be decrypted", 503);
+    try {
+      const decipher = createDecipheriv("aes-256-gcm", this.key, Buffer.from(ivValue, "base64url"));
+      decipher.setAuthTag(Buffer.from(tagValue, "base64url"));
+      return Buffer.concat([decipher.update(Buffer.from(ciphertextValue, "base64url")), decipher.final()]).toString("utf8");
+    } catch {
+      throw new DomainError("ai_key_invalid", "AI provider key cannot be decrypted", 503);
+    }
+  }
+}
+
+export function maskApiKey(value: string) {
+  const suffix = value.slice(-4);
+  return suffix ? "••••••••" + suffix : "••••••••";
+}
+
+export class AiAdminService {
+  private readonly clock: Clock;
+  private readonly db: LocalDatabase;
+  private readonly cipher: MasterKeyCipher | null;
+  constructor(db: LocalDatabase, cipher: MasterKeyCipher | null, clock: Clock = () => new Date()) { this.db = db; this.cipher = cipher; this.clock = clock; }
+  private assertAdmin(actor: Actor) { if (actor.role !== "admin") throw new DomainError("forbidden", "Administrator permission required", 403); }
+  configureProvider(actor: Actor, input: { providerKey: string; displayName: string; apiBaseUrl?: string; apiPath?: string; timeoutMs?: number; defaultModel: string; apiKey: string; enabled?: boolean }) {
+    this.assertAdmin(actor);
+    if (!input.providerKey.trim() || !input.defaultModel.trim() || !input.apiKey.trim()) throw new DomainError("invalid_input", "Provider, model and API key are required");
+    if (!this.cipher) throw new DomainError("ai_master_key_missing", "AI master key is not configured", 503);
+    const cipher = this.cipher;
+    const apiBaseUrl = input.apiBaseUrl?.trim() || "https://api.openai.com/v1";
+    const apiPath = input.apiPath?.trim() || "/chat/completions";
+    const timeoutMs = input.timeoutMs ?? 15000;
+    // Constructor validation keeps persisted configuration safe even before it
+    // is selected for live requests.  The temporary key never leaves memory.
+    void new OpenAICompatibleProvider(apiBaseUrl, input.apiKey, input.defaultModel, fetch, apiPath, timeoutMs);
+    const encrypted = cipher.encrypt(input.apiKey);
+    const id = this.db.get<{ id: string }>("SELECT id FROM ai_provider_configs WHERE provider_key = ?", [input.providerKey])?.id ?? randomUUID();
+    const existing = this.db.get<{ encryption_version: number }>("SELECT encryption_version FROM ai_provider_configs WHERE id = ?", [id]);
+    const time = iso(this.clock);
+    this.db.transaction(() => {
+      if (input.enabled === true) this.db.run("UPDATE ai_provider_configs SET enabled = 0, updated_by_id = ?, updated_at = ? WHERE enabled = 1 AND id != ?", [actor.id, time, id]);
+      this.db.run("INSERT INTO ai_provider_configs (id, provider_key, display_name, api_base_url, api_path, timeout_ms, default_model, encrypted_api_key, api_key_hint, encryption_version, key_rotated_at, enabled, created_by_id, updated_by_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(provider_key) DO UPDATE SET display_name = excluded.display_name, api_base_url = excluded.api_base_url, api_path = excluded.api_path, timeout_ms = excluded.timeout_ms, default_model = excluded.default_model, encrypted_api_key = excluded.encrypted_api_key, api_key_hint = excluded.api_key_hint, encryption_version = excluded.encryption_version, key_rotated_at = excluded.key_rotated_at, enabled = excluded.enabled, updated_by_id = excluded.updated_by_id, updated_at = excluded.updated_at", [id, input.providerKey.trim(), input.displayName.trim(), apiBaseUrl, apiPath, timeoutMs, input.defaultModel.trim(), encrypted, maskApiKey(input.apiKey), existing?.encryption_version ? existing.encryption_version + 1 : cipher.version, time, input.enabled === true ? 1 : 0, actor.id, actor.id, time, time]);
+    });
+    audit(this.db, actor.id, "ai.provider_configured", "ai_provider_config", id, "success", { providerKey: input.providerKey, enabled: input.enabled === true });
+    return this.getProvider(actor, id);
+  }
+  getProvider(actor: Actor, id: string) {
+    this.assertAdmin(actor);
+    const row = this.db.get<Record<string, any>>("SELECT id, provider_key, display_name, api_base_url, api_path, timeout_ms, default_model, api_key_hint, encryption_version, key_rotated_at, enabled, created_at, updated_at FROM ai_provider_configs WHERE id = ?", [id]);
+    if (!row) throw new DomainError("not_found", "AI provider not found", 404);
+    return row;
+  }
+  listProviders(actor: Actor) {
+    this.assertAdmin(actor);
+    return this.db.all("SELECT id, provider_key, display_name, api_base_url, api_path, timeout_ms, default_model, api_key_hint, encryption_version, key_rotated_at, enabled, created_at, updated_at FROM ai_provider_configs ORDER BY updated_at DESC");
+  }
+  getSettings(actor: Actor) {
+    this.assertAdmin(actor);
+    return this.db.get("SELECT id, provider_config_id, enabled, assistant_mode, full_answer_after_attempts, school_daily_token_limit, school_daily_request_limit, student_daily_token_limit, student_daily_request_limit, save_conversations, conversation_retention_days, max_hint_layers, timezone, updated_at FROM ai_settings WHERE id = 'global'") ?? { id: "global", provider_config_id: null, enabled: 0, assistant_mode: "hints_only", full_answer_after_attempts: null, school_daily_token_limit: null, school_daily_request_limit: null, student_daily_token_limit: null, student_daily_request_limit: null, save_conversations: 1, conversation_retention_days: null, max_hint_layers: 3, timezone: "Asia/Macau", updated_at: null };
+  }
+  disableProvider(actor: Actor, id: string) {
+    this.assertAdmin(actor);
+    const existing = this.db.get("SELECT id FROM ai_provider_configs WHERE id = ?", [id]);
+    if (!existing) throw new DomainError("not_found", "AI provider not found", 404);
+    const time = iso(this.clock);
+    this.db.transaction(() => {
+      this.db.run("UPDATE ai_provider_configs SET enabled = 0, updated_by_id = ?, updated_at = ? WHERE id = ?", [actor.id, time, id]);
+      this.db.run("UPDATE ai_settings SET enabled = 0, updated_by_id = ?, updated_at = ? WHERE id = 'global' AND provider_config_id = ?", [actor.id, time, id]);
+    });
+    audit(this.db, actor.id, "ai.provider_disabled", "ai_provider_config", id, "success");
+    return this.getProvider(actor, id);
+  }
+  activateProvider(actor: Actor, id: string) {
+    this.assertAdmin(actor);
+    if (!this.db.get("SELECT id FROM ai_provider_configs WHERE id = ?", [id])) throw new DomainError("not_found", "AI provider not found", 404);
+    const time = iso(this.clock);
+    this.db.transaction(() => {
+      this.db.run("UPDATE ai_provider_configs SET enabled = CASE WHEN id = ? THEN 1 ELSE 0 END, updated_by_id = ?, updated_at = ?", [id, actor.id, time]);
+      this.db.run("INSERT INTO ai_settings (id, provider_config_id, enabled, max_hint_layers, updated_by_id, created_at, updated_at) VALUES ('global', ?, 0, 3, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET provider_config_id = excluded.provider_config_id, enabled = 0, updated_by_id = excluded.updated_by_id, updated_at = excluded.updated_at", [id, actor.id, time, time]);
+    });
+    audit(this.db, actor.id, "ai.provider_activated", "ai_provider_config", id, "success");
+    return this.getProvider(actor, id);
+  }
+  resolveProvider(id: string): { provider_key: string; api_base_url: string | null; api_path: string; timeout_ms: number; default_model: string; updated_at: string; encryption_version: number; apiKey: string } {
+    if (!this.cipher) throw new DomainError("ai_master_key_missing", "AI master key is not configured", 503);
+    const row = this.db.get<Record<string, any>>("SELECT * FROM ai_provider_configs WHERE id = ? AND enabled = 1", [id]);
+    if (!row) throw new DomainError("provider_unavailable", "AI provider is not enabled", 503);
+    return { provider_key: row.provider_key, api_base_url: row.api_base_url, api_path: row.api_path, timeout_ms: row.timeout_ms, default_model: row.default_model, updated_at: row.updated_at, encryption_version: row.encryption_version, apiKey: this.cipher.decrypt(row.encrypted_api_key) };
+  }
+  createProvider(id: string): AiProvider {
+    const config = this.resolveProvider(id);
+    if (config.provider_key === "openai" || config.provider_key.startsWith("openai-compatible")) return new OpenAICompatibleProvider(config.api_base_url ?? "https://api.openai.com/v1", config.apiKey, config.default_model, fetch, config.api_path, config.timeout_ms);
+    throw new DomainError("provider_unsupported", "Configured AI provider has no server adapter", 503);
+  }
+  updateSettings(actor: Actor, input: { enabled?: boolean; providerConfigId?: string | null; assistantMode?: "hints_only" | "progressive" | "full_after_attempts"; fullAnswerAfterAttempts?: number | null; schoolDailyTokenLimit?: number | null; schoolDailyRequestLimit?: number | null; studentDailyTokenLimit?: number | null; studentDailyRequestLimit?: number | null; saveConversations?: boolean; conversationRetentionDays?: number | null; maxHintLayers?: number; timezone?: string }) {
+    this.assertAdmin(actor);
+    if (input.timezone) usageDate(this.clock, input.timezone);
+    for (const value of [input.fullAnswerAfterAttempts, input.schoolDailyTokenLimit, input.schoolDailyRequestLimit, input.studentDailyTokenLimit, input.studentDailyRequestLimit, input.conversationRetentionDays, input.maxHintLayers]) if (value !== undefined && value !== null && (!Number.isInteger(value) || value < 1)) throw new DomainError("invalid_input", "AI limits must be positive");
+    if (input.maxHintLayers !== undefined && input.maxHintLayers > 3) throw new DomainError("invalid_input", "Maximum hint layers cannot exceed 3");
+    const existing = this.db.get<Record<string, any>>("SELECT * FROM ai_settings WHERE id = 'global'");
+    const selectedProviderId = input.providerConfigId === undefined ? existing?.provider_config_id ?? null : input.providerConfigId;
+    if (input.enabled && (!selectedProviderId || !this.db.get("SELECT 1 FROM ai_provider_configs WHERE id = ? AND enabled = 1", [selectedProviderId]))) throw new DomainError("provider_unavailable", "Select and activate an AI provider before enabling AI", 503);
+    const time = iso(this.clock);
+    this.db.run("INSERT INTO ai_settings (id, provider_config_id, enabled, assistant_mode, full_answer_after_attempts, school_daily_token_limit, school_daily_request_limit, student_daily_token_limit, student_daily_request_limit, save_conversations, conversation_retention_days, max_hint_layers, timezone, updated_by_id, created_at, updated_at) VALUES ('global', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET provider_config_id = excluded.provider_config_id, enabled = excluded.enabled, assistant_mode = excluded.assistant_mode, full_answer_after_attempts = excluded.full_answer_after_attempts, school_daily_token_limit = excluded.school_daily_token_limit, school_daily_request_limit = excluded.school_daily_request_limit, student_daily_token_limit = excluded.student_daily_token_limit, student_daily_request_limit = excluded.student_daily_request_limit, save_conversations = excluded.save_conversations, conversation_retention_days = excluded.conversation_retention_days, max_hint_layers = excluded.max_hint_layers, timezone = excluded.timezone, updated_by_id = excluded.updated_by_id, updated_at = excluded.updated_at", [selectedProviderId, input.enabled === undefined ? existing?.enabled ?? 0 : input.enabled ? 1 : 0, input.assistantMode ?? existing?.assistant_mode ?? "hints_only", input.fullAnswerAfterAttempts === undefined ? existing?.full_answer_after_attempts ?? null : input.fullAnswerAfterAttempts, input.schoolDailyTokenLimit === undefined ? existing?.school_daily_token_limit ?? null : input.schoolDailyTokenLimit, input.schoolDailyRequestLimit === undefined ? existing?.school_daily_request_limit ?? null : input.schoolDailyRequestLimit, input.studentDailyTokenLimit === undefined ? existing?.student_daily_token_limit ?? null : input.studentDailyTokenLimit, input.studentDailyRequestLimit === undefined ? existing?.student_daily_request_limit ?? null : input.studentDailyRequestLimit, input.saveConversations === undefined ? existing?.save_conversations ?? 1 : input.saveConversations ? 1 : 0, input.conversationRetentionDays === undefined ? existing?.conversation_retention_days ?? null : input.conversationRetentionDays, input.maxHintLayers ?? existing?.max_hint_layers ?? 3, input.timezone ?? existing?.timezone ?? "Asia/Macau", actor.id, existing?.created_at ?? time, time]);
+    audit(this.db, actor.id, "ai.settings_updated", "ai_settings", "global", "success", { enabled: input.enabled, saveConversations: input.saveConversations });
+    return this.db.get("SELECT id, provider_config_id, enabled, assistant_mode, full_answer_after_attempts, school_daily_token_limit, school_daily_request_limit, student_daily_token_limit, student_daily_request_limit, save_conversations, conversation_retention_days, max_hint_layers, timezone, updated_by_id, created_at, updated_at FROM ai_settings WHERE id = 'global'");
+  }
+}
+
+export class ConfiguredAiProvider implements AiProvider {
+  private cached: { signature: string; provider: AiProvider } | null = null;
+  private readonly db: LocalDatabase;
+  private readonly admin: AiAdminService;
+  constructor(db: LocalDatabase, admin: AiAdminService) { this.db = db; this.admin = admin; }
+  async generate(request: ProviderRequest) {
+    const selected = this.db.get<Record<string, any>>("SELECT p.id, p.updated_at, p.encryption_version FROM ai_settings s JOIN ai_provider_configs p ON p.id = s.provider_config_id WHERE s.id = 'global' AND s.enabled = 1 AND p.enabled = 1");
+    if (!selected) throw new DomainError("provider_unavailable", "AI provider is not configured", 503);
+    const signature = `${selected.id}:${selected.updated_at}:${selected.encryption_version}`;
+    if (!this.cached || this.cached.signature !== signature) this.cached = { signature, provider: this.admin.createProvider(selected.id) };
+    return this.cached.provider.generate(request);
+  }
+}
+
+type SettingsRow = {
+  provider_config_id: string | null;
+  enabled: number;
+  assistant_mode: string;
+  full_answer_after_attempts: number | null;
+  school_daily_token_limit: number | null;
+  school_daily_request_limit: number | null;
+  student_daily_token_limit: number | null;
+  student_daily_request_limit: number | null;
+  save_conversations: number;
+  conversation_retention_days: number | null;
+  timezone: string;
+};
+
+class QuotaService {
+  private readonly db: LocalDatabase;
+  private readonly clock: Clock;
+  constructor(db: LocalDatabase, clock: Clock) { this.db = db; this.clock = clock; }
+  private changes() { return this.db.get<{ changes: number }>("SELECT changes() AS changes")?.changes ?? 0; }
+  settings() {
+    return this.db.get<SettingsRow>("SELECT provider_config_id, enabled, assistant_mode, full_answer_after_attempts, school_daily_token_limit, school_daily_request_limit, student_daily_token_limit, student_daily_request_limit, save_conversations, conversation_retention_days, timezone FROM ai_settings WHERE id = 'global'") ?? { provider_config_id: null, enabled: 0, assistant_mode: "hints_only", full_answer_after_attempts: null, school_daily_token_limit: null, school_daily_request_limit: null, student_daily_token_limit: null, student_daily_request_limit: null, save_conversations: 1, conversation_retention_days: null, timezone: "Asia/Macau" };
+  }
+  reserve(userId: string, reservationKey: string, estimatedTokens: number, providerConfigId: string | null) {
+    const settings = this.settings();
+    const date = usageDate(this.clock, settings.timezone);
+    const id = randomUUID();
+    let result: Record<string, any> | undefined;
+    this.db.transaction(() => {
+      const existing = this.db.get<Record<string, any>>("SELECT * FROM ai_reservations WHERE reservation_key = ?", [reservationKey]);
+      if (existing) { result = existing; return; }
+      const time = iso(this.clock);
+      this.db.run("INSERT INTO ai_daily_quotas (user_id, usage_date, updated_at) VALUES (?, ?, ?) ON CONFLICT(user_id, usage_date) DO NOTHING", [userId, date, time]);
+      this.db.run("INSERT INTO ai_school_daily_quotas (usage_date, updated_at) VALUES (?, ?) ON CONFLICT(usage_date) DO NOTHING", [date, time]);
+      this.db.run("UPDATE ai_daily_quotas SET reserved_requests = reserved_requests + 1, reserved_tokens = reserved_tokens + ?, updated_at = ? WHERE user_id = ? AND usage_date = ? AND (? IS NULL OR completed_requests + reserved_requests + 1 <= ?) AND (? IS NULL OR used_tokens + reserved_tokens + ? <= ?)", [estimatedTokens, time, userId, date, settings.student_daily_request_limit, settings.student_daily_request_limit, settings.student_daily_token_limit, estimatedTokens, settings.student_daily_token_limit]);
+      if (this.changes() !== 1) throw new DomainError("ai_quota_exceeded", "Student AI quota exceeded", 429);
+      this.db.run("UPDATE ai_school_daily_quotas SET reserved_requests = reserved_requests + 1, reserved_tokens = reserved_tokens + ?, updated_at = ? WHERE usage_date = ? AND (? IS NULL OR completed_requests + reserved_requests + 1 <= ?) AND (? IS NULL OR used_tokens + reserved_tokens + ? <= ?)", [estimatedTokens, time, date, settings.school_daily_request_limit, settings.school_daily_request_limit, settings.school_daily_token_limit, estimatedTokens, settings.school_daily_token_limit]);
+      if (this.changes() !== 1) throw new DomainError("ai_quota_exceeded", "School AI quota exceeded", 429);
+      this.db.run("INSERT INTO ai_reservations (id, reservation_key, user_id, provider_config_id, usage_date, reserved_requests, reserved_tokens, status, created_at) VALUES (?, ?, ?, ?, ?, 1, ?, 'reserved', ?)", [id, reservationKey, userId, providerConfigId, date, estimatedTokens, time]);
+      result = this.db.get("SELECT * FROM ai_reservations WHERE id = ?", [id]);
+    });
+    return result;
+  }
+  settle(reservationId: string, inputTokens: number, outputTokens: number, model: string, purpose: string, providerConfigId: string | null, conversationId: string | null, latencyMs: number, status: "success" | "error", errorCode: string | null) {
+    const existing = this.db.get<Record<string, any>>("SELECT * FROM ai_reservations WHERE id = ?", [reservationId]);
+    if (!existing) throw new DomainError("not_found", "AI reservation not found", 404);
+    if (existing.status !== "reserved") return existing;
+    if (inputTokens + outputTokens > existing.reserved_tokens) throw new DomainError("ai_usage_exceeds_reservation", "AI provider usage exceeded its reservation", 502);
+    const chargedTokens = Math.max(0, inputTokens + outputTokens);
+    const time = iso(this.clock);
+    this.db.transaction(() => {
+      this.db.run("UPDATE ai_daily_quotas SET reserved_requests = reserved_requests - 1, completed_requests = completed_requests + ?, reserved_tokens = reserved_tokens - ?, used_tokens = used_tokens + ?, updated_at = ? WHERE user_id = ? AND usage_date = ?", [status === "success" ? 1 : 0, existing.reserved_tokens, chargedTokens, time, existing.user_id, existing.usage_date]);
+      this.db.run("UPDATE ai_school_daily_quotas SET reserved_requests = reserved_requests - 1, completed_requests = completed_requests + ?, reserved_tokens = reserved_tokens - ?, used_tokens = used_tokens + ?, updated_at = ? WHERE usage_date = ?", [status === "success" ? 1 : 0, existing.reserved_tokens, chargedTokens, time, existing.usage_date]);
+      this.db.run("UPDATE ai_reservations SET status = ?, input_tokens = ?, output_tokens = ?, settled_at = ? WHERE id = ?", [status === "success" ? "settled" : "rolled_back", inputTokens, outputTokens, time, reservationId]);
+      this.db.run("INSERT INTO ai_usage (id, user_id, provider_config_id, conversation_id, purpose, usage_date, model, input_tokens, output_tokens, latency_ms, status, error_code, reservation_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [randomUUID(), existing.user_id, providerConfigId, conversationId, purpose, existing.usage_date, model, inputTokens, outputTokens, latencyMs, status, errorCode, reservationId, time]);
+    });
+    return this.db.get("SELECT * FROM ai_reservations WHERE id = ?", [reservationId]);
+  }
+}
+
+function promptFor(input: { task: string; questionPrompt?: string; studentCode?: string; runnerFeedback?: string; hintLevel?: number }, policy: { assistantMode: string; allowFullAnswer: boolean }) {
+  if (!input.task.trim()) throw new DomainError("invalid_input", "AI task is required");
+  const hintLevel = Math.max(1, Math.min(3, Number(input.hintLevel ?? 1)));
+  const payload = { task: input.task.trim(), questionPrompt: input.questionPrompt?.trim() ?? "", studentCode: input.studentCode ?? "", runnerFeedback: input.runnerFeedback ?? "", hintLevel };
+  const levelInstruction = hintLevel === 1 ? "Give a conceptual direction only." : hintLevel === 2 ? "Add one relevant syntax or debugging clue, building on the previous hint." : "Give concrete pseudocode or a partial example, but still withhold the final answer unless policy allows it.";
+  const instruction = policy.allowFullAnswer
+    ? "Give progressive educational guidance. A complete worked answer is allowed because the server attempt policy threshold has been reached."
+    : policy.assistantMode === "progressive"
+      ? `Give one progressive educational hint and a next-step question. ${levelInstruction} Do not provide a complete answer.`
+      : `Give one concise educational hint. ${levelInstruction} Do not provide a complete answer or final code.`;
+  return [{ role: "system" as const, content: instruction }, { role: "user" as const, content: JSON.stringify(payload) }];
+}
+
+export class AiService {
+  private readonly clock: Clock;
+  private readonly quota: QuotaService;
+  private readonly db: LocalDatabase;
+  private readonly provider: AiProvider;
+  constructor(db: LocalDatabase, provider: AiProvider, clock: Clock = () => new Date()) { this.db = db; this.provider = provider; this.clock = clock; this.quota = new QuotaService(db, clock); }
+  private conversation(id: string) { return this.db.get<Record<string, any>>("SELECT * FROM ai_conversations WHERE id = ?", [id]); }
+  private assertActive(actor: Actor) {
+    const user = this.db.get<{ role: string; status: string }>("SELECT role, status FROM users WHERE id = ?", [actor.id]);
+    if (!user || user.role !== actor.role || user.status !== "active") throw new DomainError("unauthorized", "Active session required", 401);
+  }
+  private assertConversationScope(actor: Actor, conversation: Record<string, any>) {
+    if (conversation.student_id !== actor.id) throw new DomainError("not_found", "Conversation not found", 404);
+    const course = this.db.get<{ status: string; enrollment_status: string }>("SELECT c.status, ce.status AS enrollment_status FROM courses c JOIN course_enrollments ce ON ce.course_id = c.id AND ce.student_id = ? WHERE c.id = ?", [actor.id, conversation.course_id]);
+    if (!course || course.status !== "published" || course.enrollment_status !== "active") throw new DomainError("not_found", "Conversation not found", 404);
+    if (conversation.assignment_id) {
+      const assignment = this.db.get("SELECT a.id FROM assignments a LEFT JOIN units u ON u.id = a.unit_id AND u.course_id = a.course_id WHERE a.id = ? AND a.course_id = ? AND a.status IN ('published', 'closed') AND (a.publish_at IS NULL OR datetime(a.publish_at) <= datetime(?)) AND (a.unit_id IS NULL OR u.status = 'published')", [conversation.assignment_id, conversation.course_id, this.clock().toISOString()]);
+      if (!assignment) throw new DomainError("not_found", "Conversation not found", 404);
+    }
+    if (conversation.question_id) {
+      const question = this.db.get("SELECT q.id FROM questions q LEFT JOIN units u ON u.id = q.unit_id AND u.course_id = q.course_id WHERE q.id = ? AND q.course_id = ? AND q.status = 'published' AND (q.unit_id IS NULL OR u.status = 'published')", [conversation.question_id, conversation.course_id]);
+      if (!question) throw new DomainError("not_found", "Conversation not found", 404);
+    }
+    return conversation;
+  }
+  startConversation(actor: Actor, courseId: string, assignmentId?: string, questionId?: string) {
+    this.assertActive(actor);
+    if (actor.role !== "student") throw new DomainError("forbidden", "Student permission required", 403);
+    if (!canViewCourse(this.db, actor, courseId)) throw new DomainError("not_found", "Course not found", 404);
+    if (assignmentId && !this.db.get("SELECT 1 FROM assignments WHERE id = ? AND course_id = ? AND status IN ('published', 'closed')", [assignmentId, courseId])) throw new DomainError("not_found", "Assignment not found", 404);
+    if (questionId && !this.db.get("SELECT 1 FROM questions WHERE id = ? AND course_id = ? AND status = 'published'", [questionId, courseId])) throw new DomainError("not_found", "Question not found", 404);
+    const existing = this.db.get<Record<string, any>>("SELECT ac.*, (SELECT COUNT(*) FROM ai_usage au WHERE au.conversation_id = ac.id AND au.user_id = ? AND au.purpose = 'student_hint' AND au.status = 'success') AS successful_hint_count FROM ai_conversations ac WHERE ac.student_id = ? AND ac.course_id = ? AND ac.assignment_id IS ? AND ac.question_id IS ? ORDER BY ac.last_message_at DESC LIMIT 1", [actor.id, actor.id, courseId, assignmentId ?? null, questionId ?? null]);
+    if (existing) return existing;
+    const id = randomUUID();
+    const time = iso(this.clock);
+    this.db.run("INSERT INTO ai_conversations (id, student_id, course_id, assignment_id, question_id, started_at, last_message_at) VALUES (?, ?, ?, ?, ?, ?, ?)", [id, actor.id, courseId, assignmentId ?? null, questionId ?? null, time, time]);
+    return this.db.get("SELECT ac.*, 0 AS successful_hint_count FROM ai_conversations ac WHERE id = ?", [id]);
+  }
+  async request(actor: Actor, input: { requestKey: string; purpose: string; task: string; model?: string; questionPrompt?: string; studentCode?: string; runnerFeedback?: string; conversationId?: string; estimatedTokens?: number; hintLevel?: number }) {
+    this.assertActive(actor);
+    if (!input.requestKey?.trim()) throw new DomainError("invalid_input", "AI request key is required");
+    if (!PURPOSES.has(input.purpose)) throw new DomainError("invalid_input", "AI purpose is invalid");
+    if (input.conversationId) {
+      const scopedConversation = this.conversation(input.conversationId);
+      if (!scopedConversation) throw new DomainError("not_found", "Conversation not found", 404);
+      this.assertConversationScope(actor, scopedConversation);
+    } else if (actor.role === "student" && !this.db.get("SELECT 1 FROM course_enrollments ce JOIN courses c ON c.id = ce.course_id WHERE ce.student_id = ? AND ce.status = 'active' AND c.status = 'published'", [actor.id])) {
+      throw new DomainError("not_found", "No active student course is available", 404);
+    }
+    const settings = this.quota.settings();
+    if (!settings.enabled || !settings.provider_config_id) throw new DomainError("ai_disabled", "AI assistant is disabled", 503);
+    const providerConfig = this.db.get<{ default_model: string }>("SELECT default_model FROM ai_provider_configs WHERE id = ? AND enabled = 1", [settings.provider_config_id]);
+    if (!providerConfig) throw new DomainError("provider_unavailable", "Configured AI provider is unavailable", 503);
+    // The selected model is server policy.  A browser-supplied model must not
+    // override the administrator's provider configuration.
+    const model = providerConfig.default_model;
+    let observedAttempts = 0;
+    let hintLevel = Math.max(1, Math.min(3, Number(input.hintLevel ?? 1)));
+    if (input.conversationId) {
+      const conversation = this.conversation(input.conversationId);
+      if (!conversation) throw new DomainError("not_found", "Conversation not found", 404);
+      this.assertConversationScope(actor, conversation);
+      if (conversation.assignment_id) observedAttempts = this.db.get<{ count: number }>("SELECT COUNT(*) AS count FROM submissions WHERE assignment_id = ? AND student_id = ? AND status != 'draft'", [conversation.assignment_id, actor.id])?.count ?? 0;
+      if (input.purpose === "student_hint") hintLevel = Math.min(3, (this.db.get<{ count: number }>("SELECT COUNT(*) AS count FROM ai_usage WHERE conversation_id = ? AND user_id = ? AND purpose = 'student_hint' AND status = 'success'", [input.conversationId, actor.id])?.count ?? 0) + 1);
+    }
+    const allowFullAnswer = settings.assistant_mode === "full_after_attempts" && Boolean(settings.full_answer_after_attempts) && observedAttempts >= Number(settings.full_answer_after_attempts);
+    const messages = promptFor({ task: input.task, questionPrompt: input.questionPrompt, studentCode: input.studentCode, runnerFeedback: input.runnerFeedback, hintLevel }, { assistantMode: settings.assistant_mode, allowFullAnswer });
+    const estimated = Math.max(1, Math.min(100000, Math.floor(input.estimatedTokens ?? Math.ceil(JSON.stringify(messages).length / 4) + 256)));
+    let reservation: Record<string, any>;
+    try {
+      reservation = this.quota.reserve(actor.id, input.requestKey, estimated, settings.provider_config_id) as Record<string, any>;
+    } catch (error) {
+      const domain = error instanceof DomainError ? error : new DomainError("ai_quota_failed", "AI quota reservation failed", 500);
+      audit(this.db, actor.id, "ai.request_rejected", "ai_request", input.requestKey, "denied", { purpose: input.purpose, code: domain.code });
+      throw domain;
+    }
+    if (reservation.status !== "reserved") return { requestKey: input.requestKey, reservationId: reservation.id, status: reservation.status, content: null, replay: true };
+    const started = Date.now();
+    try {
+      const response = await this.provider.generate({ model, messages });
+      const settled = this.quota.settle(reservation.id, response.inputTokens, response.outputTokens, response.model ?? model, input.purpose, settings.provider_config_id, input.conversationId ?? null, Date.now() - started, "success", null);
+      if (settings.save_conversations && input.conversationId) this.saveMessages(input.conversationId, actor.id, messages[1].content, response.content);
+      audit(this.db, actor.id, "ai.request_completed", "ai_request", input.requestKey, "success", { purpose: input.purpose, reservationId: reservation.id, inputTokens: response.inputTokens, outputTokens: response.outputTokens });
+      return { requestKey: input.requestKey, reservationId: (settled as Record<string, any>).id, status: "success", content: response.content, hintLevel, usage: { inputTokens: response.inputTokens, outputTokens: response.outputTokens } };
+    } catch (error) {
+      const domain = error instanceof DomainError ? error : new DomainError("provider_failed", "AI provider failed", 502);
+      this.quota.settle(reservation.id, 0, 0, model, input.purpose, settings.provider_config_id, input.conversationId ?? null, Date.now() - started, "error", domain.code);
+      audit(this.db, actor.id, "ai.request_failed", "ai_request", input.requestKey, "failure", { purpose: input.purpose, reservationId: reservation.id, code: domain.code });
+      throw domain;
+    }
+  }
+  status(actor: Actor) {
+    this.assertActive(actor);
+    if (actor.role === "student" && !this.db.get("SELECT 1 FROM course_enrollments ce JOIN courses c ON c.id = ce.course_id WHERE ce.student_id = ? AND ce.status = 'active' AND c.status = 'published'", [actor.id])) throw new DomainError("not_found", "No active student course is available", 404);
+    const settings = this.quota.settings();
+    const date = usageDate(this.clock, settings.timezone);
+    const own = this.db.get<Record<string, any>>("SELECT completed_requests, used_tokens, reserved_requests, reserved_tokens FROM ai_daily_quotas WHERE user_id = ? AND usage_date = ?", [actor.id, date]) ?? { completed_requests: 0, used_tokens: 0, reserved_requests: 0, reserved_tokens: 0 };
+    const remaining = (limit: number | null, used: number) => limit === null ? null : Math.max(0, limit - used);
+    const enabled = Boolean(settings.enabled && settings.provider_config_id && this.db.get("SELECT 1 FROM ai_provider_configs WHERE id = ? AND enabled = 1", [settings.provider_config_id]));
+    if (actor.role === "student") return { enabled, hintLevel: 0, maxHintLevel: this.db.get<{ value: number }>("SELECT max_hint_layers AS value FROM ai_settings WHERE id = 'global'")?.value ?? 3 };
+    return {
+      enabled,
+      assistantMode: settings.assistant_mode,
+      fullAnswerAfterAttempts: settings.full_answer_after_attempts,
+      saveConversations: Boolean(settings.save_conversations),
+      usageDate: date,
+      remainingRequests: remaining(settings.student_daily_request_limit, Number(own.completed_requests) + Number(own.reserved_requests)),
+      remainingTokens: remaining(settings.student_daily_token_limit, Number(own.used_tokens) + Number(own.reserved_tokens)),
+    };
+  }
+  private saveMessages(conversationId: string, studentId: string, prompt: string, response: string) {
+    const current = this.db.get<{ max: number | null }>("SELECT MAX(sequence_number) AS max FROM ai_messages WHERE conversation_id = ?", [conversationId])?.max ?? 0;
+    const time = iso(this.clock);
+    this.db.transaction(() => {
+      this.db.run("INSERT INTO ai_messages (id, conversation_id, role, content, sequence_number, prompt_version, created_at) VALUES (?, ?, 'student', ?, ?, 'p4-minimal-v1', ?)", [randomUUID(), conversationId, prompt, current + 1, time]);
+      this.db.run("INSERT INTO ai_messages (id, conversation_id, role, content, sequence_number, prompt_version, created_at) VALUES (?, ?, 'assistant', ?, ?, 'p4-minimal-v1', ?)", [randomUUID(), conversationId, response, current + 2, time]);
+      this.db.run("UPDATE ai_conversations SET last_message_at = ? WHERE id = ?", [time, conversationId]);
+    });
+  }
+  listConversation(actor: Actor, conversationId: string) {
+    const conversation = this.conversation(conversationId);
+    if (!conversation || !canViewCourse(this.db, actor, conversation.course_id) || (actor.role === "student" && conversation.student_id !== actor.id)) throw new DomainError("not_found", "Conversation not found", 404);
+    return { conversation, messages: this.db.all("SELECT id, role, content, sequence_number, prompt_version, input_tokens, output_tokens, created_at FROM ai_messages WHERE conversation_id = ? ORDER BY sequence_number", [conversationId]) };
+  }
+  cleanupExpired(actor: Actor) {
+    requireStaff(actor);
+    const settings = this.quota.settings();
+    if (!settings.conversation_retention_days) return { deletedConversations: 0, deletedMessages: 0 };
+    const cutoff = new Date(this.clock().getTime() - settings.conversation_retention_days * 86400000).toISOString();
+    const ids = this.db.all<{ id: string }>("SELECT id FROM ai_conversations WHERE last_message_at < ?", [cutoff]);
+    let messages = 0;
+    this.db.transaction(() => {
+      for (const row of ids) {
+        messages += this.db.get<{ count: number }>("SELECT COUNT(*) AS count FROM ai_messages WHERE conversation_id = ?", [row.id])?.count ?? 0;
+        this.db.run("DELETE FROM ai_messages WHERE conversation_id = ?", [row.id]);
+        this.db.run("DELETE FROM ai_conversations WHERE id = ?", [row.id]);
+      }
+    });
+    audit(this.db, actor.id, "ai.conversations_cleaned", "ai_conversations", null, "success", { deletedConversations: ids.length, deletedMessages: messages });
+    return { deletedConversations: ids.length, deletedMessages: messages };
+  }
+}
+
+export class AiReviewService {
+  private readonly clock: Clock;
+  private readonly db: LocalDatabase;
+  constructor(db: LocalDatabase, clock: Clock = () => new Date()) { this.db = db; this.clock = clock; }
+  create(actor: Actor, input: { artifactType: string; courseId: string; content: unknown; studentId?: string; materialId?: string; questionId?: string; submissionAnswerId?: string }) {
+    requireStaff(actor);
+    if (!ARTIFACT_TYPES.has(input.artifactType) || !canManageCourse(this.db, actor, input.courseId)) throw new DomainError("forbidden", "AI artifact scope denied", 403);
+    const id = randomUUID();
+    const time = iso(this.clock);
+    this.db.run("INSERT INTO ai_artifacts (id, artifact_type, course_id, student_id, material_id, question_id, submission_answer_id, content_json, status, created_by_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending_review', ?, ?, ?)", [id, input.artifactType, input.courseId, input.studentId ?? null, input.materialId ?? null, input.questionId ?? null, input.submissionAnswerId ?? null, JSON.stringify(input.content), actor.id, time, time]);
+    audit(this.db, actor.id, "ai.artifact_created", "ai_artifact", id, "success", { artifactType: input.artifactType, courseId: input.courseId });
+    return this.getStaff(actor, id);
+  }
+  review(actor: Actor, id: string, decision: "approved" | "rejected", comment?: string) {
+    requireStaff(actor);
+    const artifact = this.db.get<Record<string, any>>("SELECT * FROM ai_artifacts WHERE id = ?", [id]);
+    if (!artifact || !canManageCourse(this.db, actor, artifact.course_id)) throw new DomainError("forbidden", "AI artifact scope denied", 403);
+    if (artifact.status !== "pending_review") throw new DomainError("invalid_review_transition", "Artifact is not awaiting review");
+    const time = iso(this.clock);
+    this.db.run("UPDATE ai_artifacts SET status = ?, reviewed_by_id = ?, review_comment = ?, reviewed_at = ?, updated_at = ? WHERE id = ?", [decision, actor.id, comment ?? null, time, time, id]);
+    audit(this.db, actor.id, "ai.artifact_reviewed", "ai_artifact", id, "success", { decision });
+    return this.getStaff(actor, id);
+  }
+  publish(actor: Actor, id: string) {
+    requireStaff(actor);
+    const artifact = this.db.get<Record<string, any>>("SELECT * FROM ai_artifacts WHERE id = ?", [id]);
+    if (!artifact || !canManageCourse(this.db, actor, artifact.course_id)) throw new DomainError("forbidden", "AI artifact scope denied", 403);
+    if (artifact.status !== "approved") throw new DomainError("invalid_review_transition", "Only approved artifacts can be published");
+    const time = iso(this.clock);
+    this.db.run("UPDATE ai_artifacts SET status = 'published', published_at = ?, updated_at = ? WHERE id = ?", [time, time, id]);
+    audit(this.db, actor.id, "ai.artifact_published", "ai_artifact", id, "success");
+    return this.getStaff(actor, id);
+  }
+  getStaff(actor: Actor, id: string) {
+    requireStaff(actor);
+    const row = this.db.get<Record<string, any>>("SELECT * FROM ai_artifacts WHERE id = ?", [id]);
+    if (!row || !canManageCourse(this.db, actor, row.course_id)) throw new DomainError("not_found", "AI artifact not found", 404);
+    return { ...row, content: parseJson(row.content_json, "contentJson") };
+  }
+  getStudent(actor: Actor, id: string) {
+    if (actor.role !== "student") throw new DomainError("forbidden", "Student permission required", 403);
+    const row = this.db.get<Record<string, any>>("SELECT id, artifact_type, course_id, student_id, content_json, status, published_at FROM ai_artifacts WHERE id = ? AND status = 'published'", [id]);
+    if (!row || !canViewCourse(this.db, actor, row.course_id) || (row.student_id && row.student_id !== actor.id)) throw new DomainError("not_found", "AI artifact not found", 404);
+    return { id: row.id, artifactType: row.artifact_type, courseId: row.course_id, content: parseJson(row.content_json, "contentJson"), publishedAt: row.published_at };
+  }
+  listStaff(actor: Actor, courseId: string) {
+    requireStaff(actor);
+    if (!canManageCourse(this.db, actor, courseId)) throw new DomainError("forbidden", "AI artifact scope denied", 403);
+    return this.db.all("SELECT id, artifact_type, course_id, student_id, material_id, question_id, submission_answer_id, status, created_by_id, reviewed_by_id, review_comment, reviewed_at, published_at, created_at, updated_at FROM ai_artifacts WHERE course_id = ? ORDER BY created_at DESC", [courseId]);
+  }
+  confirmSuggestedScore(actor: Actor, id: string) {
+    requireStaff(actor);
+    const artifact = this.db.get<Record<string, any>>("SELECT * FROM ai_artifacts WHERE id = ? AND artifact_type = 'suggested_score' AND status IN ('approved', 'published')", [id]);
+    if (!artifact || !artifact.submission_answer_id || !canManageCourse(this.db, actor, artifact.course_id)) throw new DomainError("forbidden", "Suggested score scope denied", 403);
+    const content = parseJson(artifact.content_json, "contentJson") as Record<string, unknown>;
+    if (typeof content.score !== "number" || content.score < 0) throw new DomainError("invalid_input", "Suggested score is invalid");
+    this.db.run("UPDATE submission_answers SET ai_suggested_score = ?, updated_at = ? WHERE id = ?", [content.score, iso(this.clock), artifact.submission_answer_id]);
+    audit(this.db, actor.id, "ai.suggested_score_confirmed", "ai_artifact", id, "success", { submissionAnswerId: artifact.submission_answer_id });
+    return { artifactId: id, aiSuggestedScore: content.score, finalScore: this.db.get<{ final_score: number | null }>("SELECT final_score FROM submission_answers WHERE id = ?", [artifact.submission_answer_id])?.final_score ?? null };
+  }
+}

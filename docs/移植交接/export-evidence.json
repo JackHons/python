@@ -1,0 +1,47 @@
+{
+  "exportedAt": "2026-09-18T17:17:55.078Z",
+  "consistency": "all application writers stopped during complete volume copy",
+  "servicesBefore": [
+    {
+      "name": "python-learning-platform-gateway-1",
+      "imageId": "sha256:3d38825f91c1d6d47b3c3f9d184e53ecba340709d5d74726720bfa89b23f3eb8",
+      "running": true
+    },
+    {
+      "name": "python-learning-platform-converter-1",
+      "imageId": "sha256:bf59b3c12f23f15dc09ea40d0391eed646bfbf4fc0ff4fd61190e79a9bbb7919",
+      "running": true
+    },
+    {
+      "name": "python-learning-platform-email-worker-1",
+      "imageId": "sha256:dd297333bf3661d9de45767191fcdba3c1cdf465238a66d078df00e003a34590",
+      "running": true
+    },
+    {
+      "name": "python-learning-platform-backend-1",
+      "imageId": "sha256:0abfcc4a171559e22be6618b620c3d1a688a6de7329b4ae6103ca4dca0f8a816",
+      "running": true
+    }
+  ],
+  "sourceCode": "918fdbe",
+  "dataSource": "existing Phase 9B Docker runtime; Phase 11 migrations not yet applied",
+  "complete": true,
+  "servicesAfter": [
+    {
+      "name": "python-learning-platform-gateway-1",
+      "running": true
+    },
+    {
+      "name": "python-learning-platform-converter-1",
+      "running": true
+    },
+    {
+      "name": "python-learning-platform-email-worker-1",
+      "running": true
+    },
+    {
+      "name": "python-learning-platform-backend-1",
+      "running": true
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "scenario": "compose-local-admin-security-cleanup",
+  "fixtureAccountCount": 43,
+  "fixtureAccountsArchived": 43,
+  "fixtureAccountsActive": 0,
+  "adminLocal": {
+    "status": "active",
+    "mustChangePassword": true,
+    "initialLoginStatus": 200,
+    "protectedRouteBeforeChangeStatus": 428
+  },
+  "credentialFile": ".local-secrets/admin.json",
+  "credentialFileMode": "0600",
+  "credentialFileGitignored": true,
+  "credentialExcludedFromImages": true,
+  "provisionOverwriteRejected": true,
+  "oldFixedFixtureLoginStatuses": {
+    "admin": 401,
+    "teacher": 401,
+    "student": 401
+  },
+  "secretPrinted": false,
+  "volumesDeleted": false,
+  "note": "Fixture rows were archived and sessions revoked; learning records and Docker volumes were retained. The admin credential file contains a random initial password and is not part of repository evidence."
+}

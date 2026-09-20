@@ -1,0 +1,39 @@
+Material library validation — 2026-08-23 Asia/Macau
+
+Scope
+- Non-destructive migration 0007 adds file_assets purpose and library_scope.
+- Library API: available list, owner/admin scope patch, owner/school download.
+- Material API joins safe file metadata and latest conversion status.
+- Student material download requires active enrollment, published, ready, allowDownload.
+
+Real fixture
+- Source: python_ch02_basics_20260820_045200_narrated.pptx
+- Observed bytes: 2572119
+- Observed SHA-256: 1d9ef8a46d0672c59eca58b44d9cd3b54dd3e9a0cf34f8e98d686e8817805384
+- Flow: quarantine -> OOXML signature release -> ready -> same-owner reupload deduplicated -> attached to two course units -> published -> two enrolled students downloaded matching SHA-256.
+- Database assertions: one file_assets row for SHA; two materials rows reference the same asset id; no storage_key in student/library projections.
+
+Security fixtures
+- Private asset denied to another teacher; allowed only after owner changed scope to school.
+- Student available-library request returns 403.
+- Forged four-byte ZIP/PPTX, incomplete DOCX, PDF without EOF, MIME mismatch, over-limit and invalid base64 are rejected.
+- Quarantined/draft/no-download material cannot be downloaded by a student.
+
+Commands/results
+- Targeted materials: 7/7 passed.
+- Backend contract: 4/4 passed.
+- Full regression: 55/55 passed.
+- TypeScript noEmit: passed.
+- ESLint: passed.
+- Vinext production build: passed.
+- Docker backend/web image build: passed through Docker legacy-builder fallback because current Buildx session header contained a non-printable character; clean container npm ci and build passed.
+- Compose backend/web recreate: passed; all gateway/web/backend/runner services healthy.
+- Compose smoke: passed (gateway/web, backend readiness, unauthenticated API gate, production legacy route 404, Python Runner).
+- Live DB: purpose/library_scope columns present; foreign_keys=1; integrity_check=ok.
+- Live hashed CSS: `/_next/static/css/index.DjqvvddB.css` returned 200 and contains teacher-material-workspace, library-dropzone, upload-error and material-form-grid selectors.
+- Fresh browser check: title correct, login gate rendered, horizontal overflow=0, console errors=0. Authenticated browser login was intentionally not performed because it would require entering a stored credential.
+- Independent-test correction: conversion status projection now uses only schema-backed fields `created_at`, `started_at`, `finished_at` and `output_asset_id`. HTTP regression creates a real queued job then GETs `/api/v1/materials/:id/conversion`: 200, status=queued, output/start/finish=null, with no `updated_at` or `completed_at` field.
+
+Honest limitation
+- PPT/PPTX conversion worker is not configured. Queue/status persistence is implemented; UI must display "waiting for conversion service" and must not expose a preview control.
+- Browser login was not performed during this final verification because doing so would require entering a stored local credential. Unauthenticated live login gate was visually checked; authenticated material UI is covered by rendered/source contracts and API integration tests.

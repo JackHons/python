@@ -1,0 +1,78 @@
+Phase 8 host verification
+Date: 2026-08-20 Asia/Macau
+
+Full regression command (primary reproducible command):
+/Users/hon/.cache/codex-runtimes/codex-primary-runtime/dependencies/bin/fallback/pnpm run test:all
+Result: 50 passed, 0 failed (existing regression plus assignment question management, stdin/multi-type execution, and updated UI contract tests).
+
+Targeted implementation command:
+pnpm exec node --experimental-strip-types --test tests/assignments.integration.test.mjs tests/execution.integration.test.mjs
+Result: 9 passed, 0 failed. Covers middle-item removal with contiguous positions, repeatable reorder without unique-index collision, post-submission dependency conflicts with no partial write, multi-type/file asset references, bounded stdin, and public/hidden projection.
+
+Rendered HTML command:
+/Users/hon/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --test tests/rendered-html.test.mjs
+Result: 4 passed, 0 failed (including production legacy runner disabled).
+
+Host HTTP load command:
+/Users/hon/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --experimental-strip-types scripts/phase8-host-load.mjs
+Result: 40 course reads=200, 40 material reads=200, 40 grade=200, 40 submit=200, analytics=200, hiddenCanaryLeaks=0, integrity=ok, foreignKeys=1, distinctRunStudents=40. Current evidence latency: p50 19.06 ms, p95 877.62 ms, max 1248.59 ms. See phase8-host-load.json.
+
+Host Runner command:
+python3 scripts/phase8-runner-host-smoke.py
+Result: health/unauthorized/policy/timeout/output/429 checks all true; current sample 18 HTTP 200 and 22 HTTP 429 under 40 concurrent. Queue distribution is scheduler-dependent and non-fixed; this uses the explicit no-privilege-drop host override and is not Docker isolation evidence.
+
+Static Compose command:
+ruby -e 'require "yaml"; d=YAML.load_file("docker-compose.yml"); p d["services"].keys; abort "runner host port" if d["services"]["runner"]["ports"]; puts "compose-static=ok"'
+Result: ["gateway", "web", "runner", "backend"], compose-static=ok; gateway is the only published web port and runner has no host port. See phase8-compose-static.txt.
+
+Static quality commands:
+/Users/hon/.cache/codex-runtimes/codex-primary-runtime/dependencies/bin/fallback/pnpm exec tsc --noEmit
+/Users/hon/.cache/codex-runtimes/codex-primary-runtime/dependencies/bin/fallback/pnpm exec eslint . --ignore-pattern dist --ignore-pattern .next
+/Users/hon/.cache/codex-runtimes/codex-primary-runtime/dependencies/bin/fallback/pnpm exec vinext build
+sh -n scripts/*.sh
+git diff --check
+Result: all passed. `pnpm exec vinext build` emitted only the existing dynamic-route classification warning.
+
+Seed smoke command:
+/Users/hon/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --experimental-strip-types scripts/seed-demo-smoke.mjs
+Result: one-time 0600 credential file, overwrite rejection, and production disable all passed. See phase8-seed-smoke.txt.
+
+Docker/Colima Phase 8B commands:
+docker compose config --quiet
+docker compose build --pull gateway
+docker compose build --pull backend
+docker compose build --pull web
+docker compose build --pull runner
+docker compose up -d
+sh scripts/smoke-test-compose.sh
+Result: config, sequential ARM64 builds, four-service startup/health, gateway health,
+backend /ready, unauthenticated /api/v1/me 401, legacy /api/run 404, and container Runner smoke all passed. See
+phase8b-runtime-setup.txt.
+
+Real container load command:
+/Users/hon/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node scripts/phase8-compose-load.mjs
+Result: 40/40 course/material reads, 40/40 grades, 40/40 submits, hidden canary 0;
+p50 38.78 ms, p95 475.79 ms, max 1509.97 ms. This is one local sample and queue
+distribution is not a fixed contract. See phase8b-compose-load.json.
+
+Persistence/backup/runner container gates:
+docker compose restart + phase8-compose-persistence.mjs: passed, one course retained.
+phase8-compose-backup.mjs + isolated restore: checksum verified, foreign_keys=1,
+integrity=ok. Container malicious fixtures: network/subprocess/pip blocked, timeout,
+output limit and canary checks passed. See phase8b-persistence.json,
+phase8b-backup.json, phase8b-restore.json and phase8b-runner-security.json.
+
+Not proven by these gates: disposable per-job sandbox, complete egress/cgroup security,
+long-duration resource SLO, dependency network CVE audit, real AI/SMTP/PPT/PDF services.
+
+Final local account cleanup:
+`LOCAL_ADMIN_CONFIRM=PROVISION_LOCAL_ADMIN node scripts/provision-local-admin.mjs --rotate`
+Result: 43/43 load fixture accounts archived, admin-local active with
+must_change_password=1, old fixed fixture login checks all 401, credential file
+0600 and gitignored. No credential value is stored in this evidence.
+
+Post-cleanup Compose verification:
+`docker compose build web gateway && docker compose up -d web gateway`, `sh scripts/smoke-test-compose.sh`,
+browser actual-token scan, browser admin/teacher/student role smoke, and `docker compose ps` all passed;
+gateway/web/backend/runner remained healthy and no volumes were deleted. See
+`phase8b-ui-wiring.json`.

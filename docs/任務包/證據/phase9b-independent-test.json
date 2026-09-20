@@ -1,0 +1,419 @@
+{
+  "report": "Phase-9B-獨立測試報告.md",
+  "date": "2026-08-23",
+  "timezone": "Asia/Macau",
+  "workspace": "/Users/hon/Documents/ChatGPT/學習平台",
+  "role": "independent read-only acceptance worker",
+  "scope": {
+    "product_code_modified": false,
+    "schema_or_migration_modified": false,
+    "compose_modified": false,
+    "live_db_or_volume_modified": false,
+    "browser_qa_run": false,
+    "secrets_or_pii_read_or_emitted": false,
+    "ai_provider": "local fake HTTP only; no real vendor or key",
+    "ppt_fixture": {
+      "read_only": true,
+      "bytes": 2572119,
+      "sha256": "1d9ef8a46d0672c59eca58b44d9cd3b54dd3e9a0cf34f8e98d686e8817805384",
+      "mime": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+      "page_count": 16
+    }
+  },
+  "conclusion": {
+    "status": "CONDITIONAL_PASS",
+    "reason": "Both returned P1 items were independently reverified as resolved; browser/PPT visual, real vendor and strong sandbox limits remain.",
+    "matrix_counts": {
+      "total": 20,
+      "pass": 16,
+      "partial": 4,
+      "fail": 0,
+      "blocked": 0
+    },
+    "p0_risks": [
+      {
+        "id": "P0-9B-01",
+        "title": "Long-lived Runner is not a disposable per-job strong sandbox",
+        "status": "known-risk",
+        "release_boundary": "Must be closed before public or formal-exam release; not claimed complete for internal trial."
+      }
+    ],
+    "p1_resolved": [
+      {
+        "id": "P1-9B-01",
+        "title": "Student Home due ordering and status projection",
+        "status": "resolved",
+        "verification": {
+          "matrix": "reverse creation, two courses, same due tie, null due, past due, closed, allowLate true/false",
+          "states": ["past_due", "past_due", "closed", "upcoming", "upcoming", "upcoming", "no_due"],
+          "can_start": [0, 1, 0, 1, 1, 1, 1],
+          "course_count": 2,
+          "tie_break": "id ascending"
+        },
+        "source": [
+          "server/content.ts:521-536",
+          "app/lib/api-client.ts:34-44",
+          "app/page.tsx:92-93",
+          "app/page.tsx:494-546"
+        ]
+      },
+      {
+        "id": "P1-9B-02",
+        "title": "Python 3.9 fallback package policy",
+        "status": "resolved",
+        "verification": {
+          "runtimes": ["3.9.6", "3.12.13", "3.12.14"],
+          "temporary_nested_directories": ["site-packages", "dist-packages"],
+          "stdlib_allowed": ["math", "json", "sys"],
+          "unapproved_rejected": ["pip", "temporary third-party modules"],
+          "policy_only_packages": ["numpy", "pandas", "matplotlib"]
+        },
+        "source": [
+          "services/runner/server.py:100-145",
+          "services/runner/tests/test_runner.py:58-92"
+        ]
+      }
+    ]
+  },
+  "acceptance": [
+    {
+      "id": "9B-01",
+      "area": "student-home-real-dto-and-empty-state",
+      "status": "PASS",
+      "priority": "P2",
+      "evidence": [
+        "app/page.tsx:86-98",
+        "app/page.tsx:520-535",
+        "tests/phase9b-ui.contract.test.mjs",
+        "pnpm test:all: 69/69"
+      ]
+    },
+    {
+      "id": "9B-02",
+      "area": "student-home-due-order",
+      "status": "PASS",
+      "priority": "P1",
+      "evidence": [
+        "assignment_order_matrix=PASS",
+        "reverse creation, two courses, same due tie, null, past, closed, allowLate matrix",
+        "states past_due,past_due,closed,upcoming,upcoming,upcoming,no_due",
+        "can_start 0,1,0,1,1,1,1",
+        "server/content.ts:521-536",
+        "app/lib/api-client.ts:34-44",
+        "app/page.tsx:92-93"
+      ]
+    },
+    {
+      "id": "9B-03",
+      "area": "course-unit-material-practice-scope",
+      "status": "PASS",
+      "priority": "P2",
+      "evidence": [
+        "app/page.tsx:564-581",
+        "tests/education-api.integration.test.mjs",
+        "tests/materials.integration.test.mjs",
+        "tests/material-library.integration.test.mjs",
+        "tests/backend.e2e.test.mjs",
+        "targeted assignment-order and UI contracts: PASS"
+      ]
+    },
+    {
+      "id": "9B-04",
+      "area": "draft-archived-unenrolled-known-id-projection",
+      "status": "PASS",
+      "priority": "P1",
+      "evidence": [
+        "tests/phase9a.integration.test.mjs",
+        "tests/materials.integration.test.mjs",
+        "tests/material-library.integration.test.mjs",
+        "tests/education-api.integration.test.mjs"
+      ]
+    },
+    {
+      "id": "9B-05",
+      "area": "python-starter-stdin-autosave-paste-submit",
+      "status": "PASS",
+      "priority": "P1",
+      "evidence": [
+        "tests/runner-proxy.test.mjs",
+        "tests/execution.integration.test.mjs",
+        "tests/grading.integration.test.mjs",
+        "tests/hidden-tests.security.test.mjs",
+        "tests/assignments.integration.test.mjs",
+        "tests/submissions.integration.test.mjs",
+        "targeted: 18/18"
+      ]
+    },
+    {
+      "id": "9B-06",
+      "area": "public-hidden-test-projection",
+      "status": "PASS",
+      "priority": "P1",
+      "evidence": [
+        "tests/hidden-tests.security.test.mjs",
+        "tests/assignments.integration.test.mjs",
+        "tests/submissions.integration.test.mjs"
+      ]
+    },
+    {
+      "id": "9B-07",
+      "area": "layered-ai-persistence-isolation",
+      "status": "PASS",
+      "priority": "P1",
+      "evidence": [
+        "backend_ai_http=PASS",
+        "tests/phase9b-ai-http.integration.test.mjs",
+        "server/ai.ts:235-260",
+        "result: hintLevels 1,2,3; refreshedHintCount 3; outsiderDenied true"
+      ]
+    },
+    {
+      "id": "9B-08",
+      "area": "ai-fail-closed-failures-quota-privacy",
+      "status": "PASS",
+      "priority": "P1",
+      "evidence": [
+        "backend_ai_http=PASS",
+        "tests/ai-provider.unit.test.mjs",
+        "tests/ai-quota.concurrency.test.mjs",
+        "tests/ai-privacy.security.test.mjs",
+        "failure statuses 429,502,504; quotaRollback true; keyMaskedAndServerOnly true"
+      ]
+    },
+    {
+      "id": "9B-09",
+      "area": "admin-ai-provider-policy-retention",
+      "status": "PASS",
+      "priority": "P2",
+      "evidence": [
+        "server/ai.ts:134-220",
+        "tests/ai-provider.unit.test.mjs",
+        "tests/ai-review.integration.test.mjs",
+        "tests/phase9b-ui.contract.test.mjs",
+        "no browser visual claim"
+      ]
+    },
+    {
+      "id": "9B-10",
+      "area": "teacher-analytics-db-scope-filters",
+      "status": "PASS",
+      "priority": "P2",
+      "evidence": [
+        "server/analytics/service.ts",
+        "app/page.tsx:932-960",
+        "tests/analytics.integration.test.mjs"
+      ]
+    },
+    {
+      "id": "9B-11",
+      "area": "teacher-analytics-browser-ui",
+      "status": "PARTIAL",
+      "priority": "P2",
+      "evidence": [
+        "tests/phase9b-ui.contract.test.mjs",
+        "browser QA deliberately not run"
+      ]
+    },
+    {
+      "id": "9B-12",
+      "area": "real-ppt-host-conversion",
+      "status": "PASS",
+      "priority": "P2",
+      "evidence": [
+        "tests/ppt-conversion.integration.test.mjs: 1/1",
+        "fixture SHA unchanged",
+        "pageCount=16",
+        "PDF and PNG signatures valid"
+      ]
+    },
+    {
+      "id": "9B-13",
+      "area": "isolated-arm64-converter-e2e",
+      "status": "PASS",
+      "priority": "P1",
+      "evidence": [
+        "independent container_converter_e2e",
+        "network none",
+        "read-only root",
+        "tmpfs 512 MiB",
+        "memory 1 GiB",
+        "pids 128",
+        "queued outputAssetId/startedAt/finishedAt null before worker",
+        "succeeded pageCount=16 after worker"
+      ]
+    },
+    {
+      "id": "9B-14",
+      "area": "ppt-viewer-manifest-slide-pdf-rbac",
+      "status": "PASS",
+      "priority": "P1",
+      "evidence": [
+        "tests/ppt-conversion.integration.test.mjs",
+        "app/page.tsx:614-655",
+        "outsider denied",
+        "manifest has no storage path"
+      ]
+    },
+    {
+      "id": "9B-15",
+      "area": "conversion-failure-retry-cleanup-network",
+      "status": "PASS",
+      "priority": "P1",
+      "evidence": [
+        "independent converter_failure_retry",
+        "server/conversion/service.ts",
+        "docker inspect converter security fields",
+        "no host port"
+      ]
+    },
+    {
+      "id": "9B-16",
+      "area": "regression-runtime-build-compose",
+      "status": "PASS",
+      "priority": "P1",
+      "evidence": [
+        "pnpm test:all: 69/69",
+        "system Python: 13/13",
+        "bundled Python: 13/13",
+        "Docker runner: 13/13",
+        "tsc/lint/build: PASS",
+        "drizzle-kit check: PASS",
+        "compose config/build/smoke/ready/FK: PASS"
+      ]
+    },
+    {
+      "id": "9B-17",
+      "area": "ui-and-ppt-visual-fidelity",
+      "status": "PARTIAL",
+      "priority": "P2",
+      "evidence": [
+        "typed/rendered source only",
+        "no browser QA",
+        "no teacher visual PPT review"
+      ]
+    },
+    {
+      "id": "9B-18",
+      "area": "python39-fallback-package-policy",
+      "status": "PASS",
+      "priority": "P1",
+      "evidence": [
+        "runner_policy_matrix=PASS runtime 3.9.6/3.12.13/3.12.14",
+        "temporary nested site-packages/dist-packages rejected",
+        "builtin/stdlib allowed; pip/third-party rejected",
+        "numpy/pandas/matplotlib only policy-allowed",
+        "services/runner/server.py:100-145",
+        "services/runner/tests/test_runner.py:58-92"
+      ]
+    },
+    {
+      "id": "9B-19",
+      "area": "secret-source-dependency-scan",
+      "status": "PARTIAL",
+      "priority": "P2",
+      "evidence": [
+        "source scan hits classified as deterministic canary/CSS/package name",
+        "no confirmed real secret",
+        "pnpm audit blocked by missing pnpm-lock.yaml",
+        "prior npm ci observation: app 20, converter 1 high"
+      ]
+    },
+    {
+      "id": "9B-20",
+      "area": "strong-sandbox-and-40-browser",
+      "status": "PARTIAL",
+      "priority": "P0/P1",
+      "evidence": [
+        "long-lived Runner boundary remains",
+        "no real 40-browser run"
+      ]
+    }
+  ],
+  "commands": [
+    {
+      "command": "pnpm test:all",
+      "result": "PASS",
+      "summary": "69 tests, 69 pass, 0 fail, 0 skipped"
+    },
+    {
+      "command": "node --experimental-strip-types --test education/material/assignment/backend/Phase9A/Phase9B/PPT targeted set",
+      "result": "PASS",
+      "summary": "assignment-order/UI targeted PASS; 69/69 full regression"
+    },
+    {
+      "command": "independent in-memory assignment order/status matrix",
+      "result": "PASS",
+      "summary": "two courses; reverse creation; same due tie; null/past/closed/allowLate; states and can_start verified; page sort matched server order"
+    },
+    {
+      "command": "same temporary nested package-policy matrix under system3.9, bundled3.12 and Docker3.12",
+      "result": "PASS",
+      "summary": "nested site-packages/dist-packages rejected; builtin/stdlib allowed; pip/third-party rejected; numpy/pandas/matplotlib policy-only"
+    },
+    {
+      "command": "pnpm exec tsc --noEmit",
+      "result": "PASS"
+    },
+    {
+      "command": "pnpm run lint",
+      "result": "PASS",
+      "summary": "0 errors"
+    },
+    {
+      "command": "pnpm build",
+      "result": "PASS",
+      "summary": "Vinext five environments"
+    },
+    {
+      "command": "pnpm exec drizzle-kit check",
+      "result": "PASS",
+      "summary": "Everything's fine"
+    },
+    {
+      "command": "/usr/bin/python3 -m unittest services.runner.tests.test_runner",
+      "result": "PASS",
+      "summary": "Python 3.9.6, 13/13"
+    },
+    {
+      "command": "bundled python3 -m unittest services.runner.tests.test_runner",
+      "result": "PASS",
+      "summary": "Python 3.12.13, 13/13"
+    },
+    {
+      "command": "docker run runner image unittest tests.test_runner",
+      "result": "PASS",
+      "summary": "Python 3.12.14, 13/13"
+    },
+    {
+      "command": "docker compose config --quiet",
+      "result": "PASS"
+    },
+    {
+      "command": "DOCKER_BUILDKIT=0 docker compose build runner converter backend web",
+      "result": "PASS",
+      "summary": "classic builder workaround; runner/converter/backend/web images built; default Buildx first hit environment header error"
+    },
+    {
+      "command": "sh scripts/smoke-test-compose.sh",
+      "result": "PASS"
+    },
+    {
+      "command": "backend /ready plus converter ready plus runner health",
+      "result": "PASS",
+      "summary": "status ok, database ok, foreignKeys 1"
+    }
+  ],
+  "known_limits": [
+    "No real AI vendor or school SMTP",
+    "No browser visual QA or 40 real browser tabs",
+    "No teacher PPT visual fidelity review",
+    "Long-lived Runner is not strong per-job sandbox",
+    "Default Buildx encountered non-printable x-docker-expose-session-sharedkey header; classic DOCKER_BUILDKIT=0 builder passed",
+    "Full live-class, notification, backup/audit operation UI, exam, similarity and gamification remain out of scope/partial",
+    "No npm executable; pnpm audit cannot run without pnpm-lock.yaml"
+  ],
+  "allowed_write_files": [
+    "docs/任務包/Phase-9B-獨立測試報告.md",
+    "docs/任務包/證據/phase9b-independent-test.json"
+  ]
+}

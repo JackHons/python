@@ -1,0 +1,13 @@
+{
+  "scenario": "compose-backup-full-verify",
+  "settingsStatus": 200,
+  "enabledStatus": 200,
+  "createStatus": 202,
+  "verifyStatus": 200,
+  "backupId": "c13d525f-4afb-4fbf-97e3-ac51e82253ee",
+  "backupStatus": "verified",
+  "checksum": "73694155c943cb5bc615bb060098acc8f7d7d4c9109b20b74644eccf74136133",
+  "valid": true,
+  "plaintextSecretsLogged": false,
+  "note": "Backup was created in the backend volume and verified by manifest/database checksum; credentials are process-only and omitted."
+}

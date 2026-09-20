@@ -1,0 +1,17 @@
+{
+  "scenario": "compose-web-backend-runner-40-users",
+  "users": 40,
+  "courseReads": 40,
+  "materialReads": 40,
+  "gradeStatuses": {
+    "200": 40
+  },
+  "submitStatuses": {
+    "200": 40
+  },
+  "hiddenCanaryLeaks": 0,
+  "p50Ms": 38.78,
+  "p95Ms": 475.79,
+  "maxMs": 1509.97,
+  "note": "Real host -> web proxy -> backend container -> runner container. AI is production fail-closed because no external provider is configured; host fake-provider quota tests are separate."
+}

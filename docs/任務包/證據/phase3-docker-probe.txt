@@ -1,0 +1,19 @@
+Phase 3 Docker probe
+Date: 2026-08-20
+Host: macOS (Darwin), Python 3.9.6
+
+Commands:
+  docker --version
+  docker compose version
+
+Observed:
+  zsh: command not found: docker
+  zsh: command not found: docker
+
+Conclusion:
+  Docker is not installed or not available on PATH in this environment.
+  Dockerfile/Compose build, health, network isolation, privilege dropping,
+  resource limits and compose smoke are NOT ACCEPTED by this evidence.
+  Host Python unit tests remain useful for request validation, policy checks,
+  timeout/output limits and bounded 429 behavior only; they do not prove
+  container or kernel isolation.
