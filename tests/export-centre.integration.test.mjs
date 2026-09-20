@@ -30,12 +30,21 @@ test("export service enforces current scope, state transitions, expiry, and boun
     assert.throws(() => exports.retryJob(fixture.student, queued.id), { code: "forbidden", status: 403 });
     await assert.rejects(() => exports.download(fixture.student, queued.id), { code: "forbidden", status: 403 });
 
+    const classId = fixture.db.get("SELECT id FROM classes ORDER BY id LIMIT 1").id;
+    const csvExtraStudent = fixture.education.createUser(fixture.admin, { role: "student", username: "csv-prefix-student", chineseName: "CSV student", studentNumber: "CSV-1" });
+    fixture.education.addClassMember(fixture.admin, classId, csvExtraStudent.user.id);
+    fixture.education.assignClassToCourse(fixture.teacher, fixture.course.id, classId);
     fixture.db.run("UPDATE courses SET title_zh = ? WHERE id = ?", ['=CMD(1), "quoted"', fixture.course.id]);
+    fixture.db.run("UPDATE users SET chinese_name = ?, english_name = ? WHERE id = ?", ["-10+1", "+SUM(1,1)", fixture.student.id]);
+    fixture.db.run("UPDATE users SET chinese_name = ? WHERE id = ?", ["@SUM(1,1)", csvExtraStudent.user.id]);
     const csvSafe = exports.createJob(fixture.teacher, { reportType: "overview", format: "csv", filters: { courseId: fixture.course.id } });
     await exports.runJob(fixture.teacher, csvSafe.id);
     const csvText = new TextDecoder().decode((await exports.download(fixture.teacher, csvSafe.id)).bytes);
     assert.match(csvText, /'=CMD\(1\), ""quoted""/);
-    assert.doesNotMatch(csvText, /"=CMD\(1\)/);
+    assert.match(csvText, /'\+SUM\(1,1\)/);
+    assert.match(csvText, /'-10\+1/);
+    assert.match(csvText, /'@SUM\(1,1\)/);
+    assert.doesNotMatch(csvText, /"(?:=|\+|-|@)/);
 
     const failed = exports.createJob(fixture.teacher, { reportType: "overview", format: "csv", filters: { courseId: fixture.course.id } });
     fixture.db.run("UPDATE export_jobs SET data_snapshot_json = ? WHERE id = ?", ["not-json", failed.id]);
