@@ -402,9 +402,12 @@ export function createBackendApp(options: BackendOptions = {}) {
         return new Response(file.bytes, { headers: { "content-type": file.contentType, "content-disposition": 'attachment; filename="' + file.fileName.replace(/["\r\n]/g, "_") + '"', "cache-control": "no-store", "x-request-id": requestId } });
       }
       if (method === "GET" && p[0] === "notifications" && p.length === 1) return json({ notifications: services.notifications.listNotifications(actor) }, 200, { "x-request-id": requestId });
+      if (method === "GET" && p[0] === "announcements" && p.length === 1) return json({ announcements: services.notifications.listAnnouncements(actor) }, 200, { "x-request-id": requestId });
+      if (method === "GET" && p[0] === "announcements" && p[2] === "preview" && p.length === 3) return json(services.notifications.previewAnnouncement(actor, id(p[1], "announcementId")), 200, { "x-request-id": requestId });
+      if (method === "PATCH" && p[0] === "announcements" && p.length === 2) return json({ announcement: services.notifications.updateAnnouncement(actor, id(p[1], "announcementId"), (await input(request)) as never) }, 200, { "x-request-id": requestId });
       if (method === "POST" && p[0] === "announcements" && p[2] === "publish" && p.length === 3) {
         const b = await input(request);
-        return json({ announcement: services.notifications.publishAnnouncement(actor, id(p[1], "announcementId"), requestId, { sendEmail: b.sendEmail !== false }) }, 200, { "x-request-id": requestId });
+        return json({ announcement: services.notifications.publishAnnouncement(actor, id(p[1], "announcementId"), { sendEmail: b.sendEmail !== false }) }, 200, { "x-request-id": requestId });
       }
       if (method === "POST" && p[0] === "announcements" && p.length === 1) return json({ announcement: services.notifications.createAnnouncement(actor, (await input(request)) as never) }, 201, { "x-request-id": requestId });
       if (method === "POST" && p[0] === "notifications" && p[2] === "read" && p.length === 3) return json({ notification: services.notifications.markRead(actor, id(p[1], "notificationId")) }, 200, { "x-request-id": requestId });

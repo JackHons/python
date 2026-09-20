@@ -11,10 +11,12 @@ export type PortalRoute = {
 export const PORTAL_ROUTES: PortalRoute[] = [
   { path: "/student/dashboard", role: "student", labelZh: "首頁", labelEn: "Dashboard", section: "home" },
   { path: "/student/courses", role: "student", labelZh: "課程", labelEn: "Courses", section: "courses" },
+  { path: "/student/notifications", role: "student", labelZh: "通知", labelEn: "Notifications", section: "notifications" },
   { path: "/student/classrooms", role: "student", labelZh: "即時課堂", labelEn: "Live classrooms", section: "classrooms" },
   { path: "/teacher/dashboard", role: "teacher", labelZh: "教師首頁", labelEn: "Dashboard", section: "dashboard" },
   { path: "/teacher/courses", role: "teacher", labelZh: "課程內容", labelEn: "Courses", section: "content" },
   { path: "/teacher/classes", role: "teacher", labelZh: "班別學生", labelEn: "Classes", section: "classes" },
+  { path: "/teacher/announcements", role: "teacher", labelZh: "公告通知", labelEn: "Announcements", section: "announcements" },
   { path: "/teacher/classrooms", role: "teacher", labelZh: "即時課堂", labelEn: "Live classrooms", section: "classrooms" },
   { path: "/teacher/analytics", role: "teacher", labelZh: "學習分析", labelEn: "Analytics", section: "dashboard" },
   { path: "/teacher/analytics/ai", role: "teacher", labelZh: "AI 用量分析", labelEn: "AI analytics", section: "analytics-ai" },
@@ -27,6 +29,7 @@ export const PORTAL_ROUTES: PortalRoute[] = [
   { path: "/admin/settings", role: "admin", labelZh: "系統設定", labelEn: "Settings", section: "admin-settings" },
   { path: "/admin/backups", role: "admin", labelZh: "備份", labelEn: "Backups", section: "admin-backups" },
   { path: "/admin/audit", role: "admin", labelZh: "稽核", labelEn: "Audit", section: "admin-audit" },
+  { path: "/admin/email", role: "admin", labelZh: "Email Outbox", labelEn: "Email Outbox", section: "admin-email" },
 ];
 
 const DYNAMIC_ROUTES: Array<{ pattern: RegExp; role: PortalRole; section: string }> = [

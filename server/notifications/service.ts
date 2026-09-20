@@ -131,7 +131,7 @@ export class NotificationService {
   createAnnouncement(actor: Actor, input: { courseId?: string; classId?: string; titleZh: string; titleEn?: string; bodyZh: string; bodyEn?: string; publishAt?: string; expiresAt?: string }) {
     staff(actor);
     this.requireActive(actor);
-    if (!input.courseId && !input.classId) throw new DomainError("invalid_input", "Announcement audience is required");
+    if ((input.courseId ? 1 : 0) + (input.classId ? 1 : 0) !== 1) throw new DomainError("invalid_input", "Choose exactly one announcement audience");
     if (input.courseId && !this.canManageCourse(actor, input.courseId)) throw new DomainError("forbidden", "You cannot announce to this course", 403);
     if (input.classId && !this.canManageClass(actor, input.classId)) throw new DomainError("forbidden", "You cannot announce to this class", 403);
     if (!String(input.titleZh ?? "").trim() || !String(input.bodyZh ?? "").trim()) throw new DomainError("invalid_input", "Announcement title and body are required");
@@ -139,6 +139,43 @@ export class NotificationService {
     this.db.run("INSERT INTO announcements (id, author_id, course_id, class_id, title_zh, title_en, body_zh, body_en, status, publish_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?)", [id, actor.id, input.courseId ?? null, input.classId ?? null, String(input.titleZh).trim(), input.titleEn?.trim() || null, String(input.bodyZh).trim(), input.bodyEn?.trim() || null, input.publishAt ?? null, input.expiresAt ?? null]);
     audit(this.db, actor.id, "announcement.created", "announcement", id, "success", { courseId: input.courseId ?? null, classId: input.classId ?? null });
     return this.db.get("SELECT * FROM announcements WHERE id = ?", [id]);
+  }
+
+  private canManageAnnouncement(actor: Actor, announcement: Record<string, any>) {
+    return announcement.author_id === actor.id
+      || (announcement.course_id && this.canManageCourse(actor, announcement.course_id))
+      || (announcement.class_id && this.canManageClass(actor, announcement.class_id));
+  }
+
+  listAnnouncements(actor: Actor, options: { status?: "draft" | "published" | "archived" } = {}) {
+    staff(actor);
+    const rows = actor.role === "admin"
+      ? this.db.all<Record<string, any>>("SELECT * FROM announcements WHERE (? IS NULL OR status = ?) ORDER BY created_at DESC", [options.status ?? null, options.status ?? null])
+      : this.db.all<Record<string, any>>("SELECT a.* FROM announcements a WHERE (? IS NULL OR a.status = ?) AND (a.author_id = ? OR EXISTS (SELECT 1 FROM courses c WHERE c.id = a.course_id AND (c.owner_teacher_id = ? OR EXISTS (SELECT 1 FROM course_class_assignments cca JOIN class_memberships cm ON cm.class_id = cca.class_id WHERE cca.course_id = c.id AND cm.user_id = ? AND cm.member_role = 'teacher' AND cm.status = 'active'))) OR EXISTS (SELECT 1 FROM class_memberships cm WHERE cm.class_id = a.class_id AND cm.user_id = ? AND cm.member_role = 'teacher' AND cm.status = 'active')) ORDER BY a.created_at DESC", [options.status ?? null, options.status ?? null, actor.id, actor.id, actor.id, actor.id]);
+    return rows.map((row) => ({ ...row, recipient_count: this.recipients(row).length }));
+  }
+
+  updateAnnouncement(actor: Actor, announcementId: string, input: { courseId?: string; classId?: string; titleZh: string; titleEn?: string; bodyZh: string; bodyEn?: string; publishAt?: string; expiresAt?: string }) {
+    staff(actor);
+    this.requireActive(actor);
+    const current = requireRow<Record<string, any>>(this.db.get("SELECT * FROM announcements WHERE id = ?", [announcementId]), "Announcement not found");
+    if (!this.canManageAnnouncement(actor, current)) throw new DomainError("forbidden", "You cannot edit this announcement", 403);
+    if (current.status !== "draft") throw new DomainError("invalid_announcement_state", "Only draft announcements can be edited");
+    if ((input.courseId ? 1 : 0) + (input.classId ? 1 : 0) !== 1) throw new DomainError("invalid_input", "Choose exactly one announcement audience");
+    if (input.courseId && !this.canManageCourse(actor, input.courseId)) throw new DomainError("forbidden", "You cannot announce to this course", 403);
+    if (input.classId && !this.canManageClass(actor, input.classId)) throw new DomainError("forbidden", "You cannot announce to this class", 403);
+    if (!String(input.titleZh ?? "").trim() || !String(input.bodyZh ?? "").trim()) throw new DomainError("invalid_input", "Announcement title and body are required");
+    this.db.run("UPDATE announcements SET course_id = ?, class_id = ?, title_zh = ?, title_en = ?, body_zh = ?, body_en = ?, publish_at = ?, expires_at = ?, updated_at = ? WHERE id = ?", [input.courseId ?? null, input.classId ?? null, String(input.titleZh).trim(), input.titleEn?.trim() || null, String(input.bodyZh).trim(), input.bodyEn?.trim() || null, input.publishAt ?? null, input.expiresAt ?? null, now(this.clock), announcementId]);
+    audit(this.db, actor.id, "announcement.updated", "announcement", announcementId, "success", { courseId: input.courseId ?? null, classId: input.classId ?? null });
+    return this.db.get("SELECT * FROM announcements WHERE id = ?", [announcementId]);
+  }
+
+  previewAnnouncement(actor: Actor, announcementId: string) {
+    staff(actor);
+    const announcement = requireRow<Record<string, any>>(this.db.get("SELECT * FROM announcements WHERE id = ?", [announcementId]), "Announcement not found");
+    if (!this.canManageAnnouncement(actor, announcement)) throw new DomainError("forbidden", "You cannot preview this announcement", 403);
+    const recipients = this.recipients(announcement);
+    return { announcement, recipientCount: recipients.length, emailCount: recipients.filter((recipient) => Boolean(recipient.email)).length };
   }
 
   private recipients(input: { courseId?: string; classId?: string; recipientIds?: string[] }) {
@@ -172,12 +209,15 @@ export class NotificationService {
     return { eventKey: input.eventKey, notificationIds: created, recipientCount: recipients.length };
   }
 
-  publishAnnouncement(actor: Actor, announcementId: string, eventKey = `announcement:${announcementId}:published`, options: { sendEmail?: boolean } = {}) {
+  publishAnnouncement(actor: Actor, announcementId: string, eventKeyOrOptions: string | { sendEmail?: boolean } = `announcement:${announcementId}:published`, options: { sendEmail?: boolean } = {}) {
     staff(actor);
     const announcement = requireRow<Record<string, any>>(this.db.get("SELECT * FROM announcements WHERE id = ?", [announcementId]), "Announcement not found");
     if ((announcement.course_id && !this.canManageCourse(actor, announcement.course_id)) || (announcement.class_id && !this.canManageClass(actor, announcement.class_id))) throw new DomainError("forbidden", "You cannot publish this announcement", 403);
+    if (announcement.status === "archived") throw new DomainError("invalid_announcement_state", "Archived announcements cannot be published");
+    const eventKey = typeof eventKeyOrOptions === "string" ? eventKeyOrOptions : `announcement:${announcementId}:published`;
+    const publishOptions = typeof eventKeyOrOptions === "string" ? options : eventKeyOrOptions;
     if (announcement.status !== "published") this.db.run("UPDATE announcements SET status = 'published', publish_at = COALESCE(publish_at, ?), updated_at = ? WHERE id = ?", [now(this.clock), now(this.clock), announcementId]);
-    return this.createForRecipients(actor, { courseId: announcement.course_id ?? undefined, classId: announcement.class_id ?? undefined, eventKey, type: "announcement", title: announcement.title_zh, body: announcement.body_zh, announcementId, sendEmail: options.sendEmail });
+    return this.createForRecipients(actor, { courseId: announcement.course_id ?? undefined, classId: announcement.class_id ?? undefined, eventKey, type: "announcement", title: announcement.title_zh, body: announcement.body_zh, announcementId, sendEmail: publishOptions.sendEmail });
   }
 
   notifyCourseEvent(actor: Actor, input: { courseId: string; eventKey: string; type: Exclude<NotificationType, "announcement">; title: string; body: string; linkPath?: string }) {

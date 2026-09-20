@@ -17,18 +17,22 @@ test("canonical role routes are real files with stable deep-link contracts", asy
     "app/student/dashboard/page.tsx", "app/student/courses/page.tsx", "app/student/courses/[courseId]/page.tsx",
     "app/student/courses/[courseId]/units/[unitId]/page.tsx", "app/student/courses/[courseId]/assignments/[assignmentId]/page.tsx",
     "app/student/practice/[submissionId]/page.tsx", "app/student/classrooms/page.tsx", "app/student/classrooms/[sessionId]/page.tsx",
+    "app/student/notifications/page.tsx",
     "app/teacher/dashboard/page.tsx", "app/teacher/courses/page.tsx", "app/teacher/courses/[courseId]/page.tsx",
     "app/teacher/courses/[courseId]/units/[unitId]/materials/page.tsx", "app/teacher/classes/page.tsx", "app/teacher/classes/[classId]/page.tsx",
     "app/teacher/assignments/[assignmentId]/submissions/page.tsx", "app/teacher/classrooms/page.tsx", "app/teacher/classrooms/[sessionId]/page.tsx",
+    "app/teacher/announcements/page.tsx",
     "app/teacher/analytics/page.tsx", "app/teacher/analytics/ai/page.tsx", "app/teacher/ai-review/page.tsx",
     "app/admin/dashboard/page.tsx", "app/admin/users/page.tsx", "app/admin/classes/page.tsx", "app/admin/courses/page.tsx",
     "app/admin/settings/ai/page.tsx", "app/admin/settings/page.tsx", "app/admin/backups/page.tsx", "app/admin/audit/page.tsx",
+    "app/admin/email/page.tsx",
     "app/dashboard/page.tsx", "app/courses/page.tsx", "app/classroom/page.tsx",
   ];
   await Promise.all(files.map((file) => access(join(process.cwd(), file))));
   assert.deepEqual(resolvePortalPath("/student/courses/course-1/units/unit-1"), { role: "student", section: "courses", params: ["student", "courses", "course-1", "units", "unit-1"] });
   assert.equal(resolvePortalPath("/teacher/analytics/ai")?.role, "teacher");
   assert.equal(resolvePortalPath("/admin/settings/ai")?.section, "ai-settings");
+  assert.equal(resolvePortalPath("/student/notifications")?.section, "notifications");
   assert.equal(safeReturnTo("https://evil.example/student/dashboard"), null);
   assert.equal(safeReturnTo("//evil.example"), null);
   assert.equal(safeReturnTo("/student/dashboard?from=login"), "/student/dashboard?from=login");
@@ -36,6 +40,10 @@ test("canonical role routes are real files with stable deep-link contracts", asy
   assert.match(page, /RoleSidebar[\s\S]*routeError/);
   assert.match(page, /usePathname\(\)[\s\S]*hydratePortalDeepLink\(routePath/);
   assert.match(page, /router\.push\(path\)/);
+  assert.match(page, /function StudentNotifications/);
+  assert.match(page, /learningApi\.markNotificationRead/);
+  assert.match(page, /titleEn: titleEn/);
+  assert.match(page, /publishAnnouncement\(selectedId, sendEmail\)/);
   assert.doesNotMatch(page, /window\.history\.(pushState|replaceState)/);
 });
 

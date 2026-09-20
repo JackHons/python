@@ -7,15 +7,15 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { ApiError, learningApi, sortAssignmentsByDue, type AdminStatusDto, type AiArtifactDto, type AiProviderDto, type AiSettingsDto, type AiStatusDto, type AnalyticsDto, type AssignmentDto, type AssignmentItemDto, type AuditLogDto, type BackupDto, type ClassDto, type ClassroomSessionDto, type ClassroomStateDto, type CourseDto, type ExecutionDto, type FileAssetDto, type MaterialConversionDto, type MaterialDto, type MaterialPreviewDto, type NotificationDto, type QuestionDto, type QuestionHintDto, type SessionUser, type StudentQuestionDto, type SubmissionDto, type SubmissionListDto, type UnitDto, type UserDto } from "./lib/api-client";
+import { ApiError, learningApi, sortAssignmentsByDue, type AdminStatusDto, type AiArtifactDto, type AiProviderDto, type AiSettingsDto, type AiStatusDto, type AnalyticsDto, type AnnouncementDto, type AssignmentDto, type AssignmentItemDto, type AuditLogDto, type BackupDto, type ClassDto, type ClassroomSessionDto, type ClassroomStateDto, type CourseDto, type EmailDeliveryDto, type ExecutionDto, type FileAssetDto, type MaterialConversionDto, type MaterialDto, type MaterialPreviewDto, type NotificationDto, type QuestionDto, type QuestionHintDto, type SessionUser, type StudentQuestionDto, type SubmissionDto, type SubmissionListDto, type UnitDto, type UserDto } from "./lib/api-client";
 import { PORTAL_ROUTES, compatiblePath, resolvePortalPath, roleHome, safeReturnTo } from "./lib/portal-routes";
 import { hydratePortalDeepLink } from "./lib/deep-link-loader";
 import { LatestRequestGate } from "./lib/latest-request";
 
 type Language = "zh" | "en";
 type Role = "student" | "teacher" | "admin";
-type StudentView = "home" | "courses" | "missions" | "practice" | "resources" | "classrooms";
-type StaffView = "dashboard" | "content" | "materials" | "classes" | "assessment" | "classrooms" | "analytics-ai" | "ai" | "ai-settings" | "admin" | "admin-users" | "admin-classes" | "admin-courses" | "admin-settings" | "admin-backups" | "admin-audit";
+type StudentView = "home" | "courses" | "notifications" | "missions" | "practice" | "resources" | "classrooms";
+type StaffView = "dashboard" | "content" | "materials" | "classes" | "assessment" | "classrooms" | "analytics-ai" | "ai" | "announcements" | "email" | "ai-settings" | "admin" | "admin-users" | "admin-classes" | "admin-courses" | "admin-settings" | "admin-backups" | "admin-audit" | "admin-email";
 type TestState = "idle" | "running" | "passed" | "failed" | "unconfigured";
 type Translator = (zh: string, en: string) => string;
 type RunResult = {
@@ -36,6 +36,7 @@ const starterCode = "";
 const studentNav: Array<{ key: StudentView | "courses" | "resources"; zh: string; en: string }> = [
   { key: "home", zh: "首頁", en: "Home" },
   { key: "courses", zh: "課程", en: "Courses" },
+  { key: "notifications", zh: "通知", en: "Notifications" },
   { key: "missions", zh: "學習任務", en: "Missions" },
   { key: "practice", zh: "練習場", en: "Practice" },
   { key: "resources", zh: "資源", en: "Resources" },
@@ -43,7 +44,7 @@ const studentNav: Array<{ key: StudentView | "courses" | "resources"; zh: string
 ];
 const teacherNav: Array<{ key: StaffView; zh: string; en: string }> = [
   { key: "dashboard", zh: "學習分析", en: "Analytics" }, { key: "content", zh: "課程內容", en: "Content" }, { key: "materials", zh: "教材庫", en: "Materials" },
-  { key: "classes", zh: "班別學生", en: "Classes" }, { key: "assessment", zh: "功課批改", en: "Assessment" }, { key: "ai", zh: "AI 審核", en: "AI review" },
+  { key: "classes", zh: "班別學生", en: "Classes" }, { key: "announcements", zh: "公告通知", en: "Announcements" }, { key: "assessment", zh: "功課批改", en: "Assessment" }, { key: "ai", zh: "AI 審核", en: "AI review" },
 ];
 
 export default function Home() {
@@ -347,9 +348,10 @@ export default function Home() {
         {routeError && <RouteAccessError L={L} kind={routeError} home={() => navigatePath(roleHome(role))} />}
         {!routeError && <>
         {role === "student" && studentView === "home" && (
-          <StudentHome L={L} navigatePath={navigatePath} courses={courses} assignments={assignments} classrooms={studentClassrooms} notifications={notifications} startAssignment={startAssignment} />
+          <StudentHome L={L} navigatePath={navigatePath} courses={courses} assignments={assignments} classrooms={studentClassrooms} notifications={notifications} startAssignment={startAssignment} onNotificationRead={(id) => void learningApi.markNotificationRead(id).then(() => setNotifications((current) => current.map((item) => item.id === id ? { ...item, read_at: new Date().toISOString() } : item))).catch(() => showToast(L("通知暫時無法標記為已讀", "Unable to mark notification as read")))} />
         )}
         {role === "student" && studentView === "courses" && <StudentCourses L={L} courses={courses} units={courseUnits} materials={resourceMaterials} assignments={assignments} routePath={routePath} navigatePath={navigatePath} joinCourse={joinCourse} />}
+        {role === "student" && studentView === "notifications" && <StudentNotifications L={L} notifications={notifications} onNotificationRead={(id) => void learningApi.markNotificationRead(id).then(() => setNotifications((current) => current.map((item) => item.id === id ? { ...item, read_at: new Date().toISOString() } : item))).catch(() => showToast(L("通知暫時無法標記為已讀", "Unable to mark notification as read")))} />}
         {role === "student" && studentView === "missions" && (
           <MissionCentre L={L} assignments={assignments} courses={courses} routePath={routePath} navigatePath={navigatePath} startAssignment={startAssignment} />
         )}
@@ -387,6 +389,7 @@ export default function Home() {
         {role === "teacher" && staffView === "content" && <><TeacherWorkspace L={L} showToast={showToast} courses={teacherCourses} onCoursesChanged={setTeacherCourses} initialCourseId={routePath.match(/^\/teacher\/courses\/([^/]+)$/)?.[1]} /><TeacherContentEditor L={L} showToast={showToast} courses={teacherCourses} initialCourseId={routePath.match(/^\/teacher\/courses\/([^/]+)$/)?.[1]} /></>}
         {role === "teacher" && staffView === "materials" && <TeacherMaterialsHub L={L} courses={teacherCourses} initialCourseId={routePath.match(/^\/teacher\/courses\/([^/]+)\/units\/([^/]+)\/materials$/)?.[1]} initialUnitId={routePath.match(/^\/teacher\/courses\/([^/]+)\/units\/([^/]+)\/materials$/)?.[2]} />}
         {role === "teacher" && staffView === "classes" && <TeacherClassManager L={L} courses={teacherCourses} showToast={showToast} />}
+        {role === "teacher" && staffView === "announcements" && <TeacherAnnouncements L={L} courses={teacherCourses} showToast={showToast} />}
         {role === "teacher" && staffView === "assessment" && <><TeacherAssignmentPolicy L={L} courses={teacherCourses} showToast={showToast} /><TeacherPackagePolicy L={L} courses={teacherCourses} showToast={showToast} /><TeacherGradingDesk L={L} courses={teacherCourses} showToast={showToast} initialAssignmentId={routePath.match(/^\/teacher\/assignments\/([^/]+)\/submissions$/)?.[1]} /></>}
         {role === "teacher" && staffView === "classrooms" && <TeacherLiveClass L={L} courses={teacherCourses} routePath={routePath} navigatePath={navigatePath} showToast={showToast} />}
         {role === "teacher" && staffView === "analytics-ai" && <TeacherAnalyticsDashboard L={L} courses={teacherCourses} initialReport="ai-usage" />}
@@ -394,7 +397,8 @@ export default function Home() {
         {role === "admin" && staffView === "ai-settings" && <AdminAiCentre L={L} showToast={showToast} />}
         {role === "admin" && staffView === "admin-backups" && <AdminBackupCentre L={L} showToast={showToast} onEnabledChange={(enabled) => setAdminStatus((current) => current ? { ...current, backup: { ...current.backup, enabled } } : current)} />}
         {role === "admin" && staffView === "admin-audit" && <AdminAuditCentre L={L} />}
-        {role === "admin" && !["ai-settings", "admin-backups", "admin-audit"].includes(staffView) && <AdminCentre L={L} showToast={showToast} status={adminStatus} />}
+        {role === "admin" && staffView === "admin-email" && <AdminEmailOps L={L} showToast={showToast} />}
+        {role === "admin" && !["ai-settings", "admin-backups", "admin-audit", "admin-email"].includes(staffView) && <AdminCentre L={L} showToast={showToast} status={adminStatus} />}
         </>}
       </main>
       </div>
@@ -493,7 +497,7 @@ function TopNavigation({
   logout: () => Promise<void>;
   navigatePath: (path: string) => void;
 }) {
-  const studentPath: Record<StudentView, string> = { home: "/student/dashboard", courses: "/student/courses", missions: "/student/dashboard", practice: "/student/courses", resources: "/student/courses", classrooms: "/student/classrooms" };
+  const studentPath: Record<StudentView, string> = { home: "/student/dashboard", courses: "/student/courses", notifications: "/student/notifications", missions: "/student/dashboard", practice: "/student/courses", resources: "/student/courses", classrooms: "/student/classrooms" };
   const teacherPath: Partial<Record<StaffView, string>> = { dashboard: "/teacher/dashboard", content: "/teacher/courses", materials: "/teacher/courses", classes: "/teacher/classes", assessment: "/teacher/courses", ai: "/teacher/ai-review" };
 
   return (
@@ -562,6 +566,7 @@ function StudentHome({
   classrooms,
   notifications,
   startAssignment,
+  onNotificationRead,
 }: {
   L: Translator;
   navigatePath: (path: string) => void;
@@ -570,6 +575,7 @@ function StudentHome({
   classrooms: ClassroomSessionDto[];
   notifications: NotificationDto[];
   startAssignment: (assignmentId: string) => Promise<void>;
+  onNotificationRead: (notificationId: string) => void;
 }) {
   const actionableAssignment = assignments.find((assignment) => assignment.can_start !== 0);
   const upcomingReminders = assignments.filter((assignment) => assignment.reminder_state === "upcoming").slice(0, 2);
@@ -617,7 +623,7 @@ function StudentHome({
           {assignments.length ? assignments.slice(0, 3).map((assignment) => <button type="button" className="data-row-button" key={assignment.id} disabled={assignment.can_start === 0} onClick={() => void startAssignment(assignment.id)}><b>{languageText(assignment.title_zh, assignment.title_en, L)}</b><small>{assignmentReminderLabel(assignment, L)}</small></button>) : <p className="empty-copy">{L("教師尚未發布功課。", "No assignment has been published yet.")}</p>}
         </DashboardCard>
         <DashboardCard eyebrow={L("通知", "NOTIFICATIONS")} action={notifications.length ? `${notifications.length}` : L("暫無", "None")}>
-          {notifications.length ? notifications.slice(0, 3).map((notification) => <div className="data-row" key={notification.id}><b>{notification.title}</b><small>{notification.body}</small></div>) : <p className="empty-copy">{L("目前沒有新通知。", "There are no new notifications.")}</p>}
+          {notifications.length ? notifications.slice(0, 3).map((notification) => <div className="data-row" key={notification.id}><b>{notification.title}</b><small>{notification.body}</small>{!notification.read_at && <button type="button" className="text-button" onClick={() => onNotificationRead(notification.id)}>{L("標記已讀", "Mark read")}</button>}</div>) : <p className="empty-copy">{L("目前沒有新通知。", "There are no new notifications.")}</p>}
         </DashboardCard>
         <DashboardCard eyebrow={L("今日／近期課堂", "TODAY / RECENT CLASSES")} action={classrooms.length ? `${classrooms.length}` : L("暫無", "None")}>
           {classrooms.length ? classrooms.slice(0, 3).map((classroom) => <div className="data-row" key={classroom.id}><b>{classroom.title}</b><small>{classroom.status} · {classroom.started_at ? new Date(classroom.started_at).toLocaleString() : L("尚未開始", "Not started")}</small></div>) : <p className="empty-copy">{L("目前沒有近期即時課堂。", "There are no recent live classes.")}</p>}
@@ -639,6 +645,11 @@ function StudentHome({
       </section>
     </>
   );
+}
+
+function StudentNotifications({ L, notifications, onNotificationRead }: { L: Translator; notifications: NotificationDto[]; onNotificationRead: (id: string) => void }) {
+  const unreadCount = notifications.filter((item) => !item.read_at).length;
+  return <section className="student-page notification-centre"><div className="page-heading"><div><span className="grade-tag">{L("學生中心", "STUDENT CENTRE")}</span><h1>{L("通知中心", "Notification centre")}</h1><p>{unreadCount ? L(`有 ${unreadCount} 則未讀通知。`, `${unreadCount} unread notifications.`) : L("所有通知都已讀。", "All notifications are read.")}</p></div><span className="prototype-chip">{notifications.length}</span></div><div className="settings-card"><ul className="data-list notification-list">{notifications.map((notification) => <li key={notification.id} className={notification.read_at ? "notification-item" : "notification-item unread"}><div><b>{notification.title}</b><small>{new Date(notification.created_at).toLocaleString()} · {notification.type}</small><p>{notification.body}</p></div>{!notification.read_at && <button type="button" className="secondary-action" onClick={() => onNotificationRead(notification.id)}>{L("標記已讀", "Mark read")}</button>}</li>)}</ul>{!notifications.length && <p className="empty-copy">{L("目前沒有通知。", "There are no notifications yet.")}</p>}</div></section>;
 }
 
 function StudentCourses({ L, courses, units, materials, assignments, routePath, navigatePath, joinCourse }: { L: Translator; courses: CourseDto[]; units: UnitDto[]; materials: MaterialDto[]; assignments: AssignmentDto[]; routePath: string; navigatePath: (path: string) => void; joinCourse: (code: string) => Promise<void> }) {
@@ -1152,6 +1163,45 @@ function TeacherWorkspace({ L, showToast, courses, onCoursesChanged, initialCour
   async function createAssignment(event: React.FormEvent) { event.preventDefault(); if (!assignmentTitle.trim() || !selectedCourseId) return; await action(async () => { const result = await learningApi.createAssignment({ courseId: selectedCourseId, unitId: units.at(0)?.id, titleZh: assignmentTitle.trim(), titleEn: assignmentTitle.trim(), kind: "homework", maxAttempts: 1, showScoreImmediately: true, showTestResultsImmediately: true }); const firstQuestion = questions[0]; if (firstQuestion) await learningApi.addAssignmentQuestion(result.assignment.id, firstQuestion.id); setAssignmentTitle(""); await refreshCourse(); showToast(L("功課已建立，請在政策面板設定後發布", "Assignment created; configure it in the policy panel before publishing")); }); }
   const selectedCourse = courses.find((course) => course.id === selectedCourseId);
   return <div className="teacher-page"><div className="page-heading"><div><span className="grade-tag">{L("教師管理工作台", "TEACHER WORKSPACE")}</span><h1>{selectedCourse ? languageText(selectedCourse.title_zh, selectedCourse.title_en, L) : L("尚未選擇課程", "No course selected")}</h1><p>{L("課程 → 單元 → 教材 → 題目 → 功課，所有資料由後端 API 驅動。", "Course → unit → material → question → assignment, all driven by the backend API.")}</p></div><select aria-label={L("選擇課程", "Select course")} value={selectedCourseId} onChange={(event) => setSelectedCourseId(event.target.value)}><option value="">{L("選擇課程", "Select course")}</option>{courses.map((course) => <option key={course.id} value={course.id}>{languageText(course.title_zh, course.title_en, L)} · {course.status}</option>)}</select></div>{error && <p role="alert" className="form-error">{error}</p>}<div className="teacher-workspace-grid"><section className="settings-card"><h2>{L("課程與單元", "Courses and units")}</h2><form onSubmit={createCourse}><label>{L("新課程名稱", "New course title")}<input aria-label={L("新課程名稱", "New course title")} value={courseTitle} onChange={(event) => setCourseTitle(event.target.value)} /></label><button type="submit" disabled={!courseTitle.trim()}>{L("建立課程", "Create course")}</button></form><form onSubmit={createUnit}><label>{L("新單元名稱", "New unit title")}<input aria-label={L("新單元名稱", "New unit title")} value={unitTitle} onChange={(event) => setUnitTitle(event.target.value)} /></label><button type="submit" disabled={!selectedCourseId || !unitTitle.trim()}>{L("建立單元", "Create unit")}</button></form><ul className="data-list">{units.map((unit) => <li key={unit.id}>{languageText(unit.title_zh, unit.title_en, L)}</li>)}</ul><button type="button" disabled={!selectedCourseId} onClick={() => void action(async () => { await learningApi.updateCourse(selectedCourseId, { status: selectedCourse?.status === "published" ? "draft" : "published" }); const result = await learningApi.courses(); onCoursesChanged(result.courses); showToast(L("課程狀態已更新", "Course status updated")); })}>{selectedCourse?.status === "published" ? L("改為草稿", "Set draft") : L("發布課程", "Publish course")}</button></section><section className="settings-card"><h2>{L("教材", "Materials")}</h2><form onSubmit={createMaterial}><label>{L("教材標題", "Material title")}<input aria-label={L("教材標題", "Material title")} value={materialTitle} onChange={(event) => setMaterialTitle(event.target.value)} /></label><label>{L("教材內容", "Material body")}<textarea aria-label={L("教材內容", "Material body")} value={materialBody} onChange={(event) => setMaterialBody(event.target.value)} /></label><button type="submit" disabled={!selectedMaterialUnitId || !materialTitle.trim()}>{L("建立教材草稿", "Create material draft")}</button></form><ul className="data-list">{materials.map((material) => <li key={material.id}><span>{languageText(material.title_zh, material.title_en, L)} · {material.status ?? "draft"}</span>{material.status !== "published" && <button type="button" onClick={() => void action(async () => { await learningApi.updateMaterial(material.id, { status: "published" }); await refreshCourse(); })}>{L("發布", "Publish")}</button>}</li>)}</ul><p className="empty-copy">{L("文字教材可在此快速建立；檔案教材請使用下方教師教材中心。", "Create text materials here; use the Teacher Materials section below for file assets.")}</p></section><section className="settings-card"><h2>{L("題庫與 rubric", "Question bank and rubric")}</h2><form onSubmit={createQuestion}><label>{L("題目標題", "Question title")}<input aria-label={L("題目標題", "Question title")} value={questionTitle} onChange={(event) => setQuestionTitle(event.target.value)} /></label><label>{L("題目內容", "Prompt")}<textarea aria-label={L("題目內容", "Prompt")} value={questionPrompt} onChange={(event) => setQuestionPrompt(event.target.value)} /></label><label>{L("題型", "Type")}<select aria-label={L("題型", "Type")} value={questionType} onChange={(event) => setQuestionType(event.target.value)}>{["multiple_choice", "fill_blank", "short_answer", "code_fill", "python_code", "file_upload", "project_upload"].map((type) => <option key={type} value={type}>{type}</option>)}</select></label><label>{L("選項 JSON（選擇題）", "Options JSON (multiple choice)")}<input aria-label={L("選項 JSON（選擇題）", "Options JSON (multiple choice)")} value={questionOptions} onChange={(event) => setQuestionOptions(event.target.value)} /></label><label>{L("答案 JSON（教師專用）", "Answer JSON (teacher only)")}<input aria-label={L("答案 JSON（教師專用）", "Answer JSON (teacher only)")} value={questionAnswer} onChange={(event) => setQuestionAnswer(event.target.value)} /></label>{["code_fill", "python_code"].includes(questionType) && <><label>{L("起始程式", "Starter code")}<textarea value={starter} onChange={(event) => setStarter(event.target.value)} /></label><label>{L("測試案例可見性", "Test visibility")}<select value={testVisibility} onChange={(event) => setTestVisibility(event.target.value)}><option value="public">public</option><option value="hidden">hidden</option></select></label><label>{L("測試輸入 JSON", "Test input JSON")}<input value={testInput} onChange={(event) => setTestInput(event.target.value)} /></label><label>{L("預期輸出", "Expected output")}<input value={testExpected} onChange={(event) => setTestExpected(event.target.value)} /></label></>}<button type="submit" disabled={!selectedCourseId || !questionTitle.trim() || !questionPrompt.trim()}>{L("建立題目草稿", "Create question draft")}</button></form><ul className="data-list">{questions.map((question) => <li key={question.id}><span>{question.title_zh} · {question.type} · {question.status}</span>{question.status !== "published" && <button type="button" onClick={() => void action(async () => { await learningApi.updateQuestion(question.id, { status: "published" }); await refreshCourse(); })}>{L("發布", "Publish")}</button>}</li>)}</ul><input aria-label={L("Rubric 名稱", "Rubric title")} placeholder={L("Rubric 名稱（可選）", "Rubric title (optional)")} value={rubricTitle} onChange={(event) => setRubricTitle(event.target.value)} /><button type="button" disabled={!selectedCourseId || !rubricTitle.trim()} onClick={() => void action(async () => { await learningApi.createRubric({ courseId: selectedCourseId, titleZh: rubricTitle, titleEn: rubricTitle }); setRubricTitle(""); showToast(L("Rubric 已建立", "Rubric created")); })}>{L("建立 rubric", "Create rubric")}</button></section><section className="settings-card"><h2>{L("功課", "Assignments")}</h2><form onSubmit={createAssignment}><label>{L("功課標題", "Assignment title")}<input aria-label={L("功課標題", "Assignment title")} value={assignmentTitle} onChange={(event) => setAssignmentTitle(event.target.value)} /></label><button type="submit" disabled={!selectedCourseId || !assignmentTitle.trim()}>{L("建立功課草稿", "Create assignment draft")}</button></form><ul className="data-list">{assignments.map((assignment) => <li key={assignment.id}><span>{assignment.title_zh} · {assignment.status}</span>{assignment.status !== "published" && <button type="button" onClick={() => void action(async () => { await learningApi.updateAssignment(assignment.id, { status: "published" }); await refreshCourse(); })}>{L("發布", "Publish")}</button>}</li>)}</ul></section></div></div>;
+}
+
+function TeacherAnnouncements({ L, courses, showToast }: { L: Translator; courses: CourseDto[]; showToast: (message: string) => void }) {
+  const [items, setItems] = useState<AnnouncementDto[]>([]);
+  const [classes, setClasses] = useState<ClassDto[]>([]);
+  const [selectedId, setSelectedId] = useState("");
+  const [audience, setAudience] = useState<"course" | "class">("course");
+  const [audienceId, setAudienceId] = useState("");
+  const [title, setTitle] = useState("");
+  const [titleEn, setTitleEn] = useState("");
+  const [body, setBody] = useState("");
+  const [bodyEn, setBodyEn] = useState("");
+  const [publishAt, setPublishAt] = useState("");
+  const [expiresAt, setExpiresAt] = useState("");
+  const [sendEmail, setSendEmail] = useState(true);
+  const [preview, setPreview] = useState<{ recipientCount: number; emailCount: number } | null>(null);
+  const [error, setError] = useState("");
+  const selected = items.find((item) => item.id === selectedId);
+  async function refresh() {
+    try { const [announcementResult, classResult] = await Promise.all([learningApi.announcements(), learningApi.classes()]); setItems(announcementResult.announcements); setClasses(classResult.classes); setError(""); }
+    catch (caught) { setError(caught instanceof Error ? caught.message : L("公告資料載入失敗", "Announcements could not be loaded")); }
+  }
+  useEffect(() => { void refresh(); }, []);
+  function select(item: AnnouncementDto) { setSelectedId(item.id); setAudience(item.course_id ? "course" : "class"); setAudienceId(item.course_id ?? item.class_id ?? ""); setTitle(item.title_zh); setTitleEn(item.title_en ?? ""); setBody(item.body_zh); setBodyEn(item.body_en ?? ""); setPublishAt(item.publish_at ? item.publish_at.slice(0, 16) : ""); setExpiresAt(item.expires_at ? item.expires_at.slice(0, 16) : ""); setPreview(null); }
+  async function save(event: React.FormEvent) { event.preventDefault(); try { const payload = { titleZh: title, titleEn: titleEn || undefined, bodyZh: body, bodyEn: bodyEn || undefined, publishAt: publishAt || undefined, expiresAt: expiresAt || undefined, ...(audience === "course" ? { courseId: audienceId } : { classId: audienceId }) }; if (selected?.status === "draft") await learningApi.updateAnnouncement(selected.id, payload); else { const result = await learningApi.createAnnouncement(payload); setSelectedId(result.announcement.id); } await refresh(); showToast(L("公告草稿已保存", "Announcement draft saved")); } catch (caught) { setError(caught instanceof Error ? caught.message : L("保存公告失敗", "Could not save announcement")); } }
+  async function previewAnnouncement() { if (!selectedId) return; try { setPreview(await learningApi.previewAnnouncement(selectedId)); } catch (caught) { setError(caught instanceof Error ? caught.message : L("預覽失敗", "Preview failed")); } }
+  async function publish() { if (!selectedId) return; try { await learningApi.publishAnnouncement(selectedId, sendEmail); await refresh(); showToast(sendEmail ? L("公告已發布並加入 email outbox", "Announcement published and queued for email") : L("公告已發布，未加入 email outbox", "Announcement published without email")); } catch (caught) { setError(caught instanceof Error ? caught.message : L("發布公告失敗", "Could not publish announcement")); } }
+  return <section className="settings-card announcement-centre"><div className="page-heading"><div><span className="grade-tag">{L("公告與通知", "ANNOUNCEMENTS")}</span><h2>{L("教師公告工作台", "Teacher announcement desk")}</h2><p>{L("先保存草稿，再預覽收件 scope，確認後發布。", "Save a draft, preview the recipient scope, then publish when ready.")}</p></div></div>{error && <p className="form-error" role="alert">{error}</p>}<div className="teacher-workspace-grid"><form className="form-grid" onSubmit={save}><label>{L("收件範圍", "Recipient scope")}<select value={audience} onChange={(event) => { setAudience(event.target.value as "course" | "class"); setAudienceId(""); }}><option value="course">{L("課程學生", "Course students")}</option><option value="class">{L("指定班別", "Specific class")}</option></select></label><label>{audience === "course" ? L("課程", "Course") : L("班別", "Class")}<select value={audienceId} onChange={(event) => setAudienceId(event.target.value)} required><option value="">—</option>{(audience === "course" ? courses : classes).map((item) => <option key={item.id} value={item.id}>{audience === "course" ? (item as CourseDto).title_zh : (item as ClassDto).name}</option>)}</select></label><label>{L("中文標題", "Chinese title")}<input value={title} onChange={(event) => setTitle(event.target.value)} required /></label><label>{L("英文標題", "English title")}<input value={titleEn} onChange={(event) => setTitleEn(event.target.value)} /></label><label className="full-field">{L("中文內容", "Chinese body")}<textarea rows={5} value={body} onChange={(event) => setBody(event.target.value)} required /></label><label className="full-field">{L("英文內容", "English body")}<textarea rows={5} value={bodyEn} onChange={(event) => setBodyEn(event.target.value)} /></label><label>{L("預定發布（可選）", "Scheduled publish (optional)")}<input type="datetime-local" value={publishAt} onChange={(event) => setPublishAt(event.target.value)} /></label><label>{L("到期時間（可選）", "Expiry (optional)")}<input type="datetime-local" value={expiresAt} onChange={(event) => setExpiresAt(event.target.value)} /></label><label className="checkbox-field"><input type="checkbox" checked={sendEmail} onChange={(event) => setSendEmail(event.target.checked)} />{L("發布時加入 email outbox", "Queue email on publish")}</label><div className="editor-controls"><button type="submit">{selected?.status === "draft" ? L("更新草稿", "Update draft") : L("保存草稿", "Save draft")}</button><button type="button" className="secondary-action" disabled={!selectedId} onClick={() => void previewAnnouncement()}>{L("預覽收件人", "Preview recipients")}</button><button type="button" disabled={!selectedId || selected?.status !== "draft"} onClick={() => void publish()}>{L("發布公告", "Publish")}</button></div>{preview && <p className="form-note" role="status">{L(`將通知 ${preview.recipientCount} 位學生，${preview.emailCount} 封 email`, `${preview.recipientCount} students and ${preview.emailCount} emails will be queued`)}</p>}</form><div><h3>{L("現有公告", "Announcements")}</h3><ul className="data-list">{items.map((item) => <li key={item.id}><button type="button" className="data-row-button" onClick={() => select(item)}><b>{item.title_zh}</b><small>{item.status} · {item.recipient_count ?? 0} recipients</small></button></li>)}</ul>{!items.length && <p className="empty-copy">{L("尚未建立公告草稿。", "No announcements yet.")}</p>}</div></div></section>;
+}
+
+function AdminEmailOps({ L, showToast }: { L: Translator; showToast: (message: string) => void }) {
+  const [deliveries, setDeliveries] = useState<EmailDeliveryDto[]>([]);
+  const [settings, setSettings] = useState<{ enabled: boolean; configured: boolean } | null>(null);
+  const [error, setError] = useState("");
+  async function refresh() { try { const [deliveryResult, settingResult] = await Promise.all([learningApi.emailDeliveries(), learningApi.emailSettings()]); setDeliveries(deliveryResult.deliveries); setSettings(settingResult.settings); setError(""); } catch (caught) { setError(caught instanceof Error ? caught.message : L("Email outbox 載入失敗", "Email outbox could not be loaded")); } }
+  useEffect(() => { void refresh(); }, []);
+  async function process() { try { await learningApi.processEmail(); await refresh(); showToast(L("Email queue 已處理", "Email queue processed")); } catch (caught) { setError(caught instanceof Error ? caught.message : L("Email queue 處理失敗", "Email queue processing failed")); } }
+  async function retry(id: string) { try { await learningApi.retryEmail(id); await refresh(); showToast(L("已重新排入 email queue", "Email requeued")); } catch (caught) { setError(caught instanceof Error ? caught.message : L("重試失敗", "Retry failed")); } }
+  return <section className="settings-card email-ops"><div className="page-heading"><div><span className="grade-tag">EMAIL OPS</span><h2>{L("Email Outbox", "Email Outbox")}</h2><p>{L("只顯示狀態與重試操作，不會顯示 SMTP 密碼。", "View delivery state and retry failed messages without exposing SMTP passwords.")}</p></div><button type="button" onClick={() => void process()}>{L("處理 queue", "Process queue")}</button></div>{error && <p className="form-error" role="alert">{error}</p>}<p className="form-note">{settings ? `${settings.enabled ? L("已啟用", "Enabled") : L("已停用", "Disabled")} · ${settings.configured ? L("已配置", "Configured") : L("未配置", "Not configured")}` : L("正在讀取設定…", "Loading settings…")}</p><ul className="data-list">{deliveries.map((delivery) => <li key={delivery.id}><span><b>{delivery.recipient_email}</b><small>{delivery.status} · attempts {delivery.attempt_count} · {delivery.last_error_code ?? "—"}</small></span>{delivery.status === "failed" && <button type="button" onClick={() => void retry(delivery.id)}>{L("重試", "Retry")}</button>}</li>)}</ul>{!deliveries.length && <p className="empty-copy">{L("目前沒有 email delivery。", "No email deliveries yet.")}</p>}</section>;
 }
 
 function TeacherClassManager({ L, courses, showToast }: { L: Translator; courses: CourseDto[]; showToast: (message: string) => void }) {
