@@ -36,6 +36,10 @@ test("email queue retries with bounded backoff and handles bounce/cancel/disable
     const pendingResult = service.publishAnnouncement(fixture.teacher, pending.id, "mail-event-cancel");
     const pendingDelivery = fixture.db.get("SELECT id FROM email_deliveries WHERE notification_id = ?", [pendingResult.notificationIds[0]]);
     assert.equal(service.cancelDelivery(fixture.admin, pendingDelivery.id).status, "cancelled");
+    const optOut = service.createAnnouncement(fixture.teacher, { courseId: fixture.course.id, titleZh: "只看平台", bodyZh: "不要寄 email" });
+    const optOutResult = service.publishAnnouncement(fixture.teacher, optOut.id, { sendEmail: false });
+    assert.equal(optOutResult.notificationIds.length, 1);
+    assert.equal(fixture.db.get("SELECT COUNT(*) AS count FROM email_deliveries WHERE notification_id = ?", [optOutResult.notificationIds[0]]).count, 0);
   } finally {
     await fixture.close();
   }

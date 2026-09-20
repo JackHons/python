@@ -419,7 +419,11 @@ export function createBackendApp(options: BackendOptions = {}) {
       if (method === "PATCH" && p[0] === "admin" && p[1] === "email" && p[2] === "settings" && p.length === 3) return json({ settings: services.notifications.configureEmail(actor, (await input(request)) as never) }, 200, { "x-request-id": requestId });
       if (method === "POST" && p[0] === "admin" && p[1] === "email" && p[3] === "retry" && p.length === 4) return json({ delivery: services.notifications.retryDelivery(actor, id(p[2], "deliveryId")) }, 200, { "x-request-id": requestId });
       if (method === "POST" && p[0] === "admin" && p[1] === "email" && p[3] === "cancel" && p.length === 4) return json({ delivery: services.notifications.cancelDelivery(actor, id(p[2], "deliveryId")) }, 200, { "x-request-id": requestId });
-      if (method === "GET" && p[0] === "admin" && p[1] === "email" && p.length === 2) return json({ deliveries: services.notifications.listDeliveries(actor) }, 200, { "x-request-id": requestId });
+      if (method === "GET" && p[0] === "admin" && p[1] === "email" && p.length === 2) {
+        const requestedStatus = new URL(request.url).searchParams.get("status") ?? undefined;
+        const status = ["queued", "sending", "sent", "failed", "suppressed", "bounced", "cancelled"].includes(requestedStatus ?? "") ? requestedStatus : undefined;
+        return json({ deliveries: services.notifications.listDeliveries(actor, { status }) }, 200, { "x-request-id": requestId });
+      }
       if (method === "POST" && p[0] === "ai" && p[1] === "conversations" && p.length === 2) {
         const b = await input(request);
         return json({ conversation: services.ai.startConversation(actor, id(b.courseId, "courseId"), b.assignmentId ? String(b.assignmentId) : undefined, b.questionId ? String(b.questionId) : undefined) }, 201, { "x-request-id": requestId });

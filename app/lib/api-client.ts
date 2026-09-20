@@ -52,7 +52,7 @@ export type StudentQuestionDto = { id: string; type: QuestionDto["type"]; titleZ
 export type SubmissionAnswerDto = { id: string; questionId: string; position: number; answerText: string | null; answerJson: unknown; fileAssetId?: string | null; autoScore: number | null; finalScore: number | null; teacherFeedback?: string | null; question?: StudentQuestionDto };
 export type SubmissionDto = { id: string; assignment_id: string; status: string; attempt_number: number; submitted_at: string | null; scoreReleased?: boolean; testResultsReleased?: boolean; answersReleased?: boolean; totalScore?: number | null; maxScore?: number; gradeStatus?: string; answers: SubmissionAnswerDto[] };
 export type ExecutionDto = { id: string; submissionAnswerId: string; status: string; stdout: string | null; stderr: string | null; exitCode: number | null; durationMs: number | null; testResults: Array<{ id: string; status: string; expectedOutput?: string; inputJson?: unknown; actualOutput?: string | null; stderr?: string | null; scoreAwarded?: number }> };
-export type NotificationDto = { id: string; type: string; title: string; body: string; read_at: string | null; created_at: string };
+export type NotificationDto = { id: string; type: string; title: string; body: string; link_path: string | null; read_at: string | null; created_at: string };
 export type AnnouncementDto = { id: string; author_id: string; course_id: string | null; class_id: string | null; title_zh: string; title_en: string | null; body_zh: string; body_en: string | null; status: "draft" | "published" | "archived"; publish_at: string | null; expires_at: string | null; recipient_count?: number };
 export type AdminStatusDto = { ai: { configured: boolean }; backup: { enabled: boolean } };
 export type AnalyticsDto = { snapshotAt: string; data: Record<string, unknown>; missingData: string[]; scope: { role: string; courseId: string | null } };
@@ -172,9 +172,10 @@ export const learningApi = {
   exportDownloadUrl: (exportId: string) => "/api/v1/exports/" + encodeURIComponent(exportId) + "/download",
   emailSettings: () => apiFetch<{ settings: EmailSettingsDto }>("/admin/email/settings"),
   updateEmailSettings: (body: Record<string, unknown>) => apiFetch<{ settings: EmailSettingsDto }>("/admin/email/settings", { method: "PATCH", body: JSON.stringify(body) }),
-  emailDeliveries: () => apiFetch<{ deliveries: EmailDeliveryDto[] }>("/admin/email"),
+  emailDeliveries: (status?: string) => apiFetch<{ deliveries: EmailDeliveryDto[] }>("/admin/email" + (status ? "?status=" + encodeURIComponent(status) : "")),
   processEmail: () => apiFetch<{ deliveries: Array<{ id: string; status: string }> }>("/admin/email/process", { method: "POST", body: "{}" }),
   retryEmail: (deliveryId: string) => apiFetch("/admin/email/" + encodeURIComponent(deliveryId) + "/retry", { method: "POST", body: "{}" }),
+  cancelEmail: (deliveryId: string) => apiFetch("/admin/email/" + encodeURIComponent(deliveryId) + "/cancel", { method: "POST", body: "{}" }),
   auditLogs: (filters: { action?: string; correlationId?: string; limit?: number } = {}) => {
     const query = new URLSearchParams();
     if (filters.action) query.set("action", filters.action);

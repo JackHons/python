@@ -142,7 +142,7 @@ export class NotificationService {
   }
 
   private canManageAnnouncement(actor: Actor, announcement: Record<string, any>) {
-    return announcement.author_id === actor.id
+    return actor.role === "admin"
       || (announcement.course_id && this.canManageCourse(actor, announcement.course_id))
       || (announcement.class_id && this.canManageClass(actor, announcement.class_id));
   }
@@ -151,15 +151,15 @@ export class NotificationService {
     staff(actor);
     const rows = actor.role === "admin"
       ? this.db.all<Record<string, any>>("SELECT * FROM announcements WHERE (? IS NULL OR status = ?) ORDER BY created_at DESC", [options.status ?? null, options.status ?? null])
-      : this.db.all<Record<string, any>>("SELECT a.* FROM announcements a WHERE (? IS NULL OR a.status = ?) AND (a.author_id = ? OR EXISTS (SELECT 1 FROM courses c WHERE c.id = a.course_id AND (c.owner_teacher_id = ? OR EXISTS (SELECT 1 FROM course_class_assignments cca JOIN class_memberships cm ON cm.class_id = cca.class_id WHERE cca.course_id = c.id AND cm.user_id = ? AND cm.member_role = 'teacher' AND cm.status = 'active'))) OR EXISTS (SELECT 1 FROM class_memberships cm WHERE cm.class_id = a.class_id AND cm.user_id = ? AND cm.member_role = 'teacher' AND cm.status = 'active')) ORDER BY a.created_at DESC", [options.status ?? null, options.status ?? null, actor.id, actor.id, actor.id, actor.id]);
-    return rows.map((row) => ({ ...row, recipient_count: this.recipients(row).length }));
+      : this.db.all<Record<string, any>>("SELECT a.* FROM announcements a WHERE (? IS NULL OR a.status = ?) AND (EXISTS (SELECT 1 FROM courses c WHERE c.id = a.course_id AND (c.owner_teacher_id = ? OR EXISTS (SELECT 1 FROM course_class_assignments cca JOIN class_memberships cm ON cm.class_id = cca.class_id WHERE cca.course_id = c.id AND cm.user_id = ? AND cm.member_role = 'teacher' AND cm.status = 'active'))) OR EXISTS (SELECT 1 FROM class_memberships cm WHERE cm.class_id = a.class_id AND cm.user_id = ? AND cm.member_role = 'teacher' AND cm.status = 'active')) ORDER BY a.created_at DESC", [options.status ?? null, options.status ?? null, actor.id, actor.id, actor.id]);
+    return rows.map((row) => ({ ...row, recipient_count: this.recipients({ courseId: row.course_id ?? undefined, classId: row.class_id ?? undefined }).length }));
   }
 
   updateAnnouncement(actor: Actor, announcementId: string, input: { courseId?: string; classId?: string; titleZh: string; titleEn?: string; bodyZh: string; bodyEn?: string; publishAt?: string; expiresAt?: string }) {
     staff(actor);
     this.requireActive(actor);
     const current = requireRow<Record<string, any>>(this.db.get("SELECT * FROM announcements WHERE id = ?", [announcementId]), "Announcement not found");
-    if (!this.canManageAnnouncement(actor, current)) throw new DomainError("forbidden", "You cannot edit this announcement", 403);
+    if (!this.canManageAnnouncement(actor, current)) throw new DomainError("not_found", "Announcement not found", 404);
     if (current.status !== "draft") throw new DomainError("invalid_announcement_state", "Only draft announcements can be edited");
     if ((input.courseId ? 1 : 0) + (input.classId ? 1 : 0) !== 1) throw new DomainError("invalid_input", "Choose exactly one announcement audience");
     if (input.courseId && !this.canManageCourse(actor, input.courseId)) throw new DomainError("forbidden", "You cannot announce to this course", 403);
@@ -173,8 +173,8 @@ export class NotificationService {
   previewAnnouncement(actor: Actor, announcementId: string) {
     staff(actor);
     const announcement = requireRow<Record<string, any>>(this.db.get("SELECT * FROM announcements WHERE id = ?", [announcementId]), "Announcement not found");
-    if (!this.canManageAnnouncement(actor, announcement)) throw new DomainError("forbidden", "You cannot preview this announcement", 403);
-    const recipients = this.recipients(announcement);
+    if (!this.canManageAnnouncement(actor, announcement)) throw new DomainError("not_found", "Announcement not found", 404);
+    const recipients = this.recipients({ courseId: announcement.course_id ?? undefined, classId: announcement.class_id ?? undefined });
     return { announcement, recipientCount: recipients.length, emailCount: recipients.filter((recipient) => Boolean(recipient.email)).length };
   }
 
@@ -197,10 +197,10 @@ export class NotificationService {
         const result = this.db.run("INSERT OR IGNORE INTO notifications (id, recipient_id, announcement_id, type, title, body, link_path, source_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", [id, recipient.id, input.announcementId ?? null, input.type, safeBody(input.title), body, input.linkPath ?? null, input.eventKey]);
         if (!Number(result.changes ?? 0)) continue;
         created.push(id);
-        if (recipient.email && this.emailEnabled && input.sendEmail !== false) {
+        if (recipient.email && input.sendEmail !== false && this.emailEnabled) {
           const emailId = randomUUID();
           this.db.run("INSERT INTO email_deliveries (id, notification_id, recipient_email, status, subject, body, next_attempt_at) VALUES (?, ?, ?, 'queued', ?, ?, ?)", [emailId, id, recipient.email, safeBody(input.title), body, now(this.clock)]);
-        } else if (recipient.email) {
+        } else if (recipient.email && input.sendEmail !== false) {
           this.db.run("INSERT INTO email_deliveries (id, notification_id, recipient_email, status, subject, body, last_error_code) VALUES (?, ?, ?, 'suppressed', ?, ?, 'email_disabled')", [emailId(), id, recipient.email, safeBody(input.title), body]);
         }
       }
@@ -228,12 +228,12 @@ export class NotificationService {
 
   notifyAssignmentPublished(actor: Actor, assignmentId: string, eventKey = `assignment:${assignmentId}:published`) {
     const assignment = requireRow<Record<string, any>>(this.db.get("SELECT id, course_id, title_zh FROM assignments WHERE id = ?", [assignmentId]), "Assignment not found");
-    return this.notifyCourseEvent(actor, { courseId: assignment.course_id, eventKey, type: "assignment_published", title: "新功課已發布", body: `功課：${assignment.title_zh}`, linkPath: `/assignments/${assignment.id}` });
+    return this.notifyCourseEvent(actor, { courseId: assignment.course_id, eventKey, type: "assignment_published", title: "新功課已發布", body: `功課：${assignment.title_zh}`, linkPath: `/student/courses/${assignment.course_id}/assignments/${assignment.id}` });
   }
 
   notifyDueReminder(actor: Actor, assignmentId: string, eventKey = `assignment:${assignmentId}:due-reminder`) {
     const assignment = requireRow<Record<string, any>>(this.db.get("SELECT id, course_id, title_zh, due_at FROM assignments WHERE id = ?", [assignmentId]), "Assignment not found");
-    return this.notifyCourseEvent(actor, { courseId: assignment.course_id, eventKey, type: "due_reminder", title: "功課即將截止", body: `功課：${assignment.title_zh}${assignment.due_at ? `，截止時間：${assignment.due_at}` : ""}`, linkPath: `/assignments/${assignment.id}` });
+    return this.notifyCourseEvent(actor, { courseId: assignment.course_id, eventKey, type: "due_reminder", title: "功課即將截止", body: `功課：${assignment.title_zh}${assignment.due_at ? `，截止時間：${assignment.due_at}` : ""}`, linkPath: `/student/courses/${assignment.course_id}/assignments/${assignment.id}` });
   }
 
   notifyGradeReleased(actor: Actor, submissionId: string, eventKey = `submission:${submissionId}:grade-released`) {
@@ -242,7 +242,7 @@ export class NotificationService {
     if (!this.canManageCourse(actor, submission.course_id)) throw new DomainError("forbidden", "You cannot release this grade", 403);
     const recipient = this.db.get<{ id: string; email: string | null }>("SELECT u.id, u.email FROM users u JOIN course_enrollments ce ON ce.student_id = u.id WHERE u.id = ? AND ce.course_id = ? AND ce.status = 'active' AND u.status = 'active'", [submission.student_id, submission.course_id]);
     if (!recipient) throw new DomainError("not_found", "Student not found", 404);
-    return this.createForRecipients(actor, { courseId: submission.course_id, recipientIds: [submission.student_id], eventKey, type: "grade_released", title: "成績已發布", body: `功課「${submission.title_zh}」的成績已可查看。`, linkPath: `/submissions/${submissionId}` });
+    return this.createForRecipients(actor, { courseId: submission.course_id, recipientIds: [submission.student_id], eventKey, type: "grade_released", title: "成績已發布", body: `功課「${submission.title_zh}」的成績已可查看。`, linkPath: `/student/practice/${submissionId}` });
   }
 
   notifyLateNotice(actor: Actor, courseId: string, eventKey: string, title = "逾期提交通知", body = "你的功課已逾期提交。", linkPath?: string, studentId?: string) {
