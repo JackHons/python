@@ -397,6 +397,7 @@ export function createBackendApp(options: BackendOptions = {}) {
       }
       if (method === "GET" && p[0] === "exports" && p.length === 1) return json({ jobs: services.exports.listJobs(actor) }, 200, { "x-request-id": requestId });
       if (method === "POST" && p[0] === "exports" && p[2] === "run" && p.length === 3) return json({ job: await services.exports.runJob(actor, id(p[1], "exportId")) }, 200, { "x-request-id": requestId });
+      if (method === "POST" && p[0] === "exports" && p[2] === "retry" && p.length === 3) return json({ job: services.exports.retryJob(actor, id(p[1], "exportId")) }, 200, { "x-request-id": requestId });
       if (method === "GET" && p[0] === "exports" && p[2] === "download" && p.length === 3) {
         const file = await services.exports.download(actor, id(p[1], "exportId"));
         return new Response(file.bytes, { headers: { "content-type": file.contentType, "content-disposition": 'attachment; filename="' + file.fileName.replace(/["\r\n]/g, "_") + '"', "cache-control": "no-store", "x-request-id": requestId } });

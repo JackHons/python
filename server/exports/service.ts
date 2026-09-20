@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any -- export rows are report projections. */
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
-import { resolve, relative } from "node:path";
+import { isAbsolute, relative, resolve, sep } from "node:path";
 import * as XLSX from "xlsx";
 import type { Actor } from "../education.ts";
 import type { LocalDatabase } from "../db.ts";
@@ -20,6 +20,7 @@ function now(clock: () => Date) { return clock().toISOString(); }
 function json(value: unknown) { return JSON.stringify(value ?? {}); }
 function requireRow<T>(row: T | undefined, message: string) { if (!row) throw new DomainError("not_found", message, 404); return row; }
 function safeFilePart(value: string) { return value.replace(/[^A-Za-z0-9._-]/g, "_"); }
+function assertStaff(actor: Actor) { if (actor.role !== "admin" && actor.role !== "teacher") throw new DomainError("forbidden", "Staff permission required", 403); }
 function safeCell(value: unknown) {
   if (typeof value !== "string") return value;
   const cleaned = value.replace(/[\t\r\n]/g, " ");
@@ -67,7 +68,50 @@ export class ExportService {
     return map[type]?.(actor, filters) ?? (() => { throw new DomainError("invalid_report", "Report type is not supported"); })();
   }
 
+  private canManageCourse(actor: Actor, courseId: string) {
+    if (actor.role === "admin") return true;
+    if (actor.role !== "teacher") return false;
+    return Boolean(this.db.get("SELECT 1 FROM courses c WHERE c.id = ? AND (c.owner_teacher_id = ? OR EXISTS (SELECT 1 FROM course_class_assignments cca JOIN class_memberships cm ON cm.class_id = cca.class_id WHERE cca.course_id = c.id AND cm.user_id = ? AND cm.member_role = 'teacher' AND cm.status = 'active'))", [courseId, actor.id, actor.id]));
+  }
+
+  private canManageClass(actor: Actor, classId: string) {
+    if (actor.role === "admin") return Boolean(this.db.get("SELECT 1 FROM classes WHERE id = ? AND status = 'active'", [classId]));
+    return actor.role === "teacher" && Boolean(this.db.get("SELECT 1 FROM class_memberships WHERE class_id = ? AND user_id = ? AND member_role = 'teacher' AND status = 'active'", [classId, actor.id]));
+  }
+
+  private storagePath(storageKey: string) {
+    const path = resolve(this.root, storageKey);
+    const withinRoot = relative(this.root, path);
+    if (!storageKey || !withinRoot || isAbsolute(withinRoot) || withinRoot === ".." || withinRoot.startsWith(`..${sep}`)) {
+      throw new DomainError("invalid_storage_key", "Export storage key is invalid");
+    }
+    return path;
+  }
+
+  private assertCurrentScope(actor: Actor, job: Record<string, any>) {
+    assertStaff(actor);
+    if (actor.role === "admin") return;
+    if (job.requested_by_id !== actor.id) throw new DomainError("not_found", "Export job not found", 404);
+    let scope: { courseId?: string | null; classId?: string | null };
+    try { scope = JSON.parse(String(job.scope_json)) as { courseId?: string | null; classId?: string | null }; }
+    catch { throw new DomainError("not_found", "Export job not found", 404); }
+    if (!scope.courseId && !scope.classId) throw new DomainError("not_found", "Export job not found", 404);
+    if (scope.courseId && !this.canManageCourse(actor, scope.courseId)) throw new DomainError("not_found", "Export job not found", 404);
+    if (scope.classId && !this.canManageClass(actor, scope.classId)) throw new DomainError("not_found", "Export job not found", 404);
+  }
+
+  private jobForActor(actor: Actor, jobId: string) {
+    const job = requireRow<Record<string, any>>(this.db.get("SELECT * FROM export_jobs WHERE id = ?", [jobId]), "Export job not found");
+    this.assertCurrentScope(actor, job);
+    return job;
+  }
+
+  private assertNotExpired(job: Record<string, any>) {
+    if (job.expires_at && new Date(job.expires_at).getTime() <= this.clock().getTime()) throw new DomainError("export_expired", "Export has expired", 410);
+  }
+
   createJob(actor: Actor, input: { reportType: ReportType; format: Format; filters?: Filters; correlationId?: string }) {
+    assertStaff(actor);
     if (!Object.keys(CONTENT_TYPES).includes(input.format)) throw new DomainError("invalid_format", "Export format is not supported");
     const filters = input.filters ?? {};
     const report = this.report(actor, input.reportType, filters);
@@ -80,9 +124,10 @@ export class ExportService {
   }
 
   async runJob(actor: Actor, jobId: string) {
-    const job = requireRow<Record<string, any>>(this.db.get("SELECT * FROM export_jobs WHERE id = ?", [jobId]), "Export job not found");
-    if (job.requested_by_id !== actor.id && actor.role !== "admin") throw new DomainError("forbidden", "You cannot run this export", 403);
+    const job = this.jobForActor(actor, jobId);
+    this.assertNotExpired(job);
     if (job.status === "completed") return this.db.get("SELECT * FROM export_jobs WHERE id = ?", [jobId]);
+    if (job.status !== "queued") throw new DomainError("invalid_export_state", "Only queued exports can be run");
     const filters = JSON.parse(job.filter_json) as Filters;
     this.db.run("UPDATE export_jobs SET status = 'running', attempt_count = attempt_count + 1, started_at = ?, error_code = NULL, error_message = NULL WHERE id = ?", [now(this.clock), jobId]);
     try {
@@ -101,8 +146,7 @@ export class ExportService {
         bytes = makePdf([`Learning Platform Report ${REPORT_VERSION}`, `SnapshotAt: ${job.snapshot_at}`, `Timezone: ${TIMEZONE}`, `Scope: ${json(report.scope)}`, `Filters: ${json(filters)}`, ...rows.slice(0, 45).map((row) => Object.entries(row).map(([key, value]) => `${key}=${String(value)}`).join(" | "))]);
       }
       const key = `exports/${job.id}.${job.format}`;
-      const path = resolve(this.root, key);
-      if (!path.startsWith(`${this.root}/`)) throw new DomainError("invalid_storage_key", "Export storage key is invalid");
+      const path = this.storagePath(key);
       await mkdir(resolve(this.root, "exports"), { recursive: true });
       await writeFile(path, bytes, { flag: "wx", mode: 0o600 }).catch(async (error) => { if (error.code === "EEXIST") await writeFile(path, bytes, { mode: 0o600 }); else throw error; });
       const sha256 = createHash("sha256").update(bytes).digest("hex");
@@ -120,32 +164,33 @@ export class ExportService {
   run(actor: Actor, jobId: string) { return this.runJob(actor, jobId); }
 
   async download(actor: Actor, jobId: string) {
-    const job = requireRow<Record<string, any>>(this.db.get("SELECT * FROM export_jobs WHERE id = ?", [jobId]), "Export job not found");
-    if (job.requested_by_id !== actor.id && actor.role !== "admin") throw new DomainError("forbidden", "You cannot download this export", 403);
+    const job = this.jobForActor(actor, jobId);
     if (job.status !== "completed" || !job.storage_key) throw new DomainError("export_unavailable", "Export is not ready");
-    if (job.expires_at && new Date(job.expires_at).getTime() <= this.clock().getTime()) throw new DomainError("export_expired", "Export has expired", 410);
-    const path = resolve(this.root, job.storage_key);
-    if (relative(this.root, path).startsWith("..")) throw new DomainError("invalid_storage_key", "Export storage key is invalid");
+    this.assertNotExpired(job);
+    const path = this.storagePath(job.storage_key);
     const bytes = await readFile(path);
     if (createHash("sha256").update(bytes).digest("hex") !== job.sha256) throw new DomainError("export_checksum_mismatch", "Export checksum mismatch", 500);
     return { bytes, contentType: CONTENT_TYPES[job.format], fileName: `learning-report-${safeFilePart(job.report_type)}.${job.format}`, snapshotAt: job.snapshot_at, timezone: job.timezone, reportVersion: job.report_version, sha256: job.sha256 };
   }
 
   listJobs(actor: Actor) {
+    assertStaff(actor);
     if (actor.role === "admin") return this.db.all("SELECT * FROM export_jobs ORDER BY created_at DESC");
-    return this.db.all("SELECT * FROM export_jobs WHERE requested_by_id = ? ORDER BY created_at DESC", [actor.id]);
+    return this.db.all<Record<string, any>>("SELECT * FROM export_jobs WHERE requested_by_id = ? ORDER BY created_at DESC", [actor.id]).filter((job) => {
+      try { this.assertCurrentScope(actor, job); return true; } catch (error) { if (error instanceof DomainError && error.code === "not_found") return false; throw error; }
+    });
   }
   retryJob(actor: Actor, jobId: string) {
-    const job = requireRow<{ requested_by_id: string; status: string }>(this.db.get("SELECT requested_by_id, status FROM export_jobs WHERE id = ?", [jobId]), "Export job not found");
-    if (job.requested_by_id !== actor.id && actor.role !== "admin") throw new DomainError("forbidden", "You cannot retry this export", 403);
+    const job = this.jobForActor(actor, jobId);
+    this.assertNotExpired(job);
     if (job.status !== "failed") throw new DomainError("invalid_export_state", "Only failed exports can be retried");
-    this.db.run("UPDATE export_jobs SET status = 'queued', error_code = NULL, error_message = NULL WHERE id = ?", [jobId]);
+    this.db.run("UPDATE export_jobs SET status = 'queued', error_code = NULL, error_message = NULL, storage_key = NULL, sha256 = NULL, byte_size = NULL, started_at = NULL, finished_at = NULL, deleted_at = NULL WHERE id = ?", [jobId]);
     return this.db.get("SELECT * FROM export_jobs WHERE id = ?", [jobId]);
   }
   async cleanupExpired(actor: Actor) {
     if (actor.role !== "admin") throw new DomainError("forbidden", "Administrator permission required", 403);
     const rows = this.db.all<{ id: string; storage_key: string | null }>("SELECT id, storage_key FROM export_jobs WHERE expires_at IS NOT NULL AND expires_at <= ? AND status = 'completed'", [now(this.clock)]);
-    for (const row of rows) if (row.storage_key) await unlink(resolve(this.root, row.storage_key)).catch(() => undefined);
+    for (const row of rows) if (row.storage_key) await unlink(this.storagePath(row.storage_key)).catch(() => undefined);
     this.db.run("UPDATE export_jobs SET status = 'cancelled', storage_key = NULL, deleted_at = NULL WHERE expires_at IS NOT NULL AND expires_at <= ? AND status = 'completed'", [now(this.clock)]);
     this.audit.record(actor, { action: "export.cleanup", entityType: "export_job", metadata: { count: rows.length } });
     return { deleted: rows.length };

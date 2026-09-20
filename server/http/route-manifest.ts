@@ -75,6 +75,7 @@ export const API_ROUTE_CONTRACTS: ApiRouteContract[] = [
   route(/^\/activities\/[^/]+\/transition$/, "/activities/:activityId/transition", "/activities/activity-1/transition", ["POST"], staff, true),
   route(/^\/exports$/, "/exports", "/exports", ["GET", "POST"], staff),
   route(/^\/exports\/[^/]+\/run$/, "/exports/:exportId/run", "/exports/export-1/run", ["POST"], staff, true),
+  route(/^\/exports\/[^/]+\/retry$/, "/exports/:exportId/retry", "/exports/export-1/retry", ["POST"], staff, true),
   route(/^\/exports\/[^/]+\/download$/, "/exports/:exportId/download", "/exports/export-1/download", ["GET"], staff),
   route(/^\/notifications$/, "/notifications", "/notifications", ["GET"], all),
   route(/^\/notifications\/[^/]+\/read$/, "/notifications/:notificationId/read", "/notifications/notification-1/read", ["POST"], all, true),

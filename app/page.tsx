@@ -1299,8 +1299,8 @@ function TeacherExportCentre({ L, courses, showToast }: { L: Translator; courses
     <div className="section-heading"><h2>{L("匯出工作", "Export jobs")}</h2><button type="button" className="secondary-action" onClick={() => void refresh()} disabled={loading}>{L("重新整理", "Refresh")}</button></div>
     {loading ? <p className="empty-copy">{L("正在載入…", "Loading…")}</p> : jobs.length === 0 ? <p className="empty-copy">{L("尚未建立匯出工作。", "No export jobs yet.")}</p> : <ul className="data-list export-job-list">{jobs.map((job) => {
       const expired = isExpired(job);
-      const canRun = job.status === "queued";
-      const canRetry = job.status === "failed";
+      const canRun = job.status === "queued" && !expired;
+      const canRetry = job.status === "failed" && !expired;
       const canDownload = job.status === "completed" && !expired;
       return <li key={job.id} className="export-job-row"><div><b>{exportReportLabel(job.report_type, L)} · {job.format.toUpperCase()}</b><small>{jobCourseLabel(job)} · {exportStatusLabel(job.status, L)} · {L("快照", "Snapshot")} {formatDate(job.snapshot_at)}</small><small>{L("嘗試", "Attempts")} {job.attempt_count} · {L("到期", "Expires")} {formatDate(job.expires_at)} · {job.byte_size === null ? L("大小 —", "Size —") : `${L("大小", "Size")} ${formatBytes(job.byte_size)}`}{job.error_code ? ` · ${L("錯誤代碼", "Error code")} ${job.error_code}` : ""}{expired ? ` · ${L("已過期", "Expired")}` : ""}</small></div><div className="editor-controls">{canRun && <button type="button" onClick={() => void updateJob(job, "run")} disabled={busyId === job.id}>{busyId === job.id ? L("處理中…", "Working…") : L("執行", "Run")}</button>}{canRetry && <button type="button" onClick={() => void updateJob(job, "retry")} disabled={busyId === job.id}>{L("重試", "Retry")}</button>}{canDownload && <a className="button" href={learningApi.exportDownloadUrl(job.id)}>{L("下載", "Download")}</a>}</div></li>;
     })}</ul>}
