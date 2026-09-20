@@ -3,6 +3,7 @@ import * as XLSX from "xlsx";
 import type { LocalDatabase } from "./db.ts";
 import { DomainError } from "./errors.ts";
 import { generateOpaqueToken, hashPassword, hashToken, verifyPassword } from "./security.ts";
+import { assertExamResourceAccess } from "./exam.ts";
 
 export type Role = "admin" | "teacher" | "student";
 export type Actor = { id: string; role: Role };
@@ -535,6 +536,7 @@ export class EducationService {
 
   listUnits(actor: Actor, courseId: string) {
     this.getCourse(actor, courseId);
+    assertExamResourceAccess(this.database, actor, courseId);
     const status = actor.role === "student" ? "status = 'published'" : "status != 'archived'";
     return this.database.all(`SELECT id, course_id, title_zh, title_en, description_zh, description_en, position, status, published_at, created_at, updated_at FROM units WHERE course_id = ? AND ${status} ORDER BY position, created_at`, [courseId]);
   }

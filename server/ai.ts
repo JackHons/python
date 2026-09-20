@@ -4,6 +4,7 @@ import type { Actor } from "./education.ts";
 import type { LocalDatabase } from "./db.ts";
 import { DomainError } from "./errors.ts";
 import { normalizeQuestionConcepts, QuestionService } from "./content.ts";
+import { assertExamResourceAccess, hasActiveExam } from "./exam.ts";
 
 const STAFF = new Set(["admin", "teacher"]);
 const PURPOSES = new Set(["student_hint", "translation", "question_generation", "grading", "summary", "feedback"]);
@@ -392,6 +393,7 @@ export class AiService {
   startConversation(actor: Actor, courseId: string, assignmentId?: string, questionId?: string) {
     this.assertActive(actor);
     if (actor.role !== "student") throw new DomainError("forbidden", "Student permission required", 403);
+    assertExamResourceAccess(this.db, actor, courseId);
     if (!canViewCourse(this.db, actor, courseId)) throw new DomainError("not_found", "Course not found", 404);
     if (assignmentId && !this.db.get("SELECT 1 FROM assignments WHERE id = ? AND course_id = ? AND status IN ('published', 'closed')", [assignmentId, courseId])) throw new DomainError("not_found", "Assignment not found", 404);
     if (questionId && !this.db.get("SELECT 1 FROM questions WHERE id = ? AND course_id = ? AND status = 'published'", [questionId, courseId])) throw new DomainError("not_found", "Question not found", 404);
@@ -404,6 +406,7 @@ export class AiService {
   }
   async request(actor: Actor, input: { requestKey: string; purpose: string; task: string; model?: string; questionPrompt?: string; studentCode?: string; runnerFeedback?: string; conversationId?: string; estimatedTokens?: number; hintLevel?: number }) {
     this.assertActive(actor);
+    if (actor.role === "student" && hasActiveExam(this.db, actor.id)) throw new DomainError("exam_mode_restriction", "AI assistant is unavailable during an active exam", 423);
     if (!input.requestKey?.trim()) throw new DomainError("invalid_input", "AI request key is required");
     if (!PURPOSES.has(input.purpose)) throw new DomainError("invalid_input", "AI purpose is invalid");
     if (input.conversationId) {
@@ -799,6 +802,7 @@ export class AiReviewService {
     if (actor.role !== "student") throw new DomainError("forbidden", "Student permission required", 403);
     const row = this.db.get<Record<string, any>>("SELECT id, artifact_type, course_id, student_id, content_json, status, published_at FROM ai_artifacts WHERE id = ? AND status = 'published' AND artifact_type IN ('material', 'translation', 'feedback')", [id]);
     if (!row || !canViewCourse(this.db, actor, row.course_id) || (row.student_id && row.student_id !== actor.id)) throw new DomainError("not_found", "AI artifact not found", 404);
+    assertExamResourceAccess(this.db, actor, row.course_id);
     return { id: row.id, artifactType: row.artifact_type, courseId: row.course_id, content: parseJson(row.content_json, "contentJson"), publishedAt: row.published_at };
   }
   materializeQuestion(actor: Actor, id: string) {

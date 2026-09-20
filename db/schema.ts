@@ -529,6 +529,9 @@ export const assignments = sqliteTable(
     aiAssistantEnabled: integer("ai_assistant_enabled", { mode: "boolean" })
       .notNull()
       .default(true),
+    examMode: integer("exam_mode", { mode: "boolean" })
+      .notNull()
+      .default(false),
     status: text("status", { enum: ["draft", "scheduled", "published", "closed", "archived"] })
       .notNull()
       .default("draft"),
@@ -680,6 +683,31 @@ export const submissionAnswers = sqliteTable(
   ],
 );
 
+export const examEvents = sqliteTable(
+  "exam_events",
+  {
+    id: text("id").primaryKey(),
+    assignmentId: text("assignment_id")
+      .notNull()
+      .references(() => assignments.id, { onDelete: "cascade" }),
+    submissionId: text("submission_id")
+      .notNull()
+      .references(() => submissions.id, { onDelete: "cascade" }),
+    studentId: text("student_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    eventType: text("event_type", { enum: ["tab_hidden", "tab_visible", "route_blocked", "focus_lost"] }).notNull(),
+    pagePath: text("page_path"),
+    payloadJson: text("payload_json").notNull().default("{}"),
+    idempotencyKey: text("idempotency_key").notNull(),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    uniqueIndex("uq_exam_events_student_submission_key").on(table.studentId, table.submissionId, table.idempotencyKey),
+    index("idx_exam_events_submission_created").on(table.submissionId, table.createdAt),
+  ],
+);
+
 export const codeSnapshots = sqliteTable(
   "code_snapshots",
   {
@@ -710,6 +738,31 @@ export const codeSnapshots = sqliteTable(
       "chk_code_snapshots_pasted_characters_nonnegative",
       sql`${table.pastedCharacterCount} >= 0`,
     ),
+  ],
+);
+
+export const codeSimilarityReports = sqliteTable(
+  "code_similarity_reports",
+  {
+    id: text("id").primaryKey(),
+    courseId: text("course_id").notNull().references(() => courses.id, { onDelete: "cascade" }),
+    assignmentId: text("assignment_id").notNull().references(() => assignments.id, { onDelete: "cascade" }),
+    answerAId: text("answer_a_id").notNull().references(() => submissionAnswers.id, { onDelete: "cascade" }),
+    answerBId: text("answer_b_id").notNull().references(() => submissionAnswers.id, { onDelete: "cascade" }),
+    studentAId: text("student_a_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    studentBId: text("student_b_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    similarity: real("similarity").notNull(),
+    algorithmVersion: text("algorithm_version").notNull().default("token-jaccard-v1"),
+    status: text("status", { enum: ["pending_review", "confirmed", "dismissed"] }).notNull().default("pending_review"),
+    reviewedById: text("reviewed_by_id").references(() => users.id, { onDelete: "set null" }),
+    reviewComment: text("review_comment"),
+    reviewedAt: text("reviewed_at"),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    uniqueIndex("uq_code_similarity_pair").on(table.assignmentId, table.answerAId, table.answerBId),
+    index("idx_code_similarity_course_status").on(table.courseId, table.status),
   ],
 );
 
@@ -1361,6 +1414,63 @@ export const featureFlags = sqliteTable("feature_flags", {
     .references(() => users.id, { onDelete: "restrict" }),
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
+
+export const gamificationSettings = sqliteTable("gamification_settings", {
+  id: text("id").primaryKey(),
+  xpEnabled: integer("xp_enabled", { mode: "boolean" }).notNull().default(true),
+  badgesEnabled: integer("badges_enabled", { mode: "boolean" }).notNull().default(true),
+  streaksEnabled: integer("streaks_enabled", { mode: "boolean" }).notNull().default(true),
+  leaderboardEnabled: integer("leaderboard_enabled", { mode: "boolean" }).notNull().default(true),
+  updatedById: text("updated_by_id").references(() => users.id, { onDelete: "set null" }),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const gamificationEvents = sqliteTable(
+  "gamification_events",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    courseId: text("course_id").references(() => courses.id, { onDelete: "cascade" }),
+    eventKey: text("event_key").notNull(),
+    eventType: text("event_type").notNull(),
+    xp: integer("xp").notNull().default(0),
+    metadataJson: text("metadata_json").notNull().default("{}"),
+    occurredAt: text("occurred_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    uniqueIndex("uq_gamification_events_key").on(table.eventKey),
+    index("idx_gamification_events_user_course").on(table.userId, table.courseId, table.occurredAt),
+  ],
+);
+
+export const studentStreaks = sqliteTable("student_streaks", {
+  userId: text("user_id").primaryKey().references(() => users.id, { onDelete: "cascade" }),
+  currentStreak: integer("current_streak").notNull().default(0),
+  longestStreak: integer("longest_streak").notNull().default(0),
+  lastActivityDate: text("last_activity_date"),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const badgeDefinitions = sqliteTable("badge_definitions", {
+  code: text("code").primaryKey(),
+  titleZh: text("title_zh").notNull(),
+  titleEn: text("title_en").notNull(),
+  descriptionZh: text("description_zh").notNull(),
+  descriptionEn: text("description_en").notNull(),
+  enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+});
+
+export const studentBadges = sqliteTable(
+  "student_badges",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    courseId: text("course_id").references(() => courses.id, { onDelete: "cascade" }),
+    badgeCode: text("badge_code").notNull().references(() => badgeDefinitions.code, { onDelete: "cascade" }),
+    awardedAt: text("awarded_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [uniqueIndex("uq_student_badges_scope").on(table.userId, table.courseId, table.badgeCode)],
+);
 
 export const systemSettings = sqliteTable("system_settings", {
   key: text("key").primaryKey(),

@@ -17,6 +17,9 @@ import { BackupService } from "../backups/service.ts";
 import { AiAdminService, AiService, ConfiguredAiProvider, MasterKeyCipher, type AiProvider } from "../ai.ts";
 import { AiReviewService } from "../ai.ts";
 import { AuditService } from "../audit/service.ts";
+import { ExamService } from "../exam.ts";
+import { SimilarityService } from "../similarity.ts";
+import { GamificationService } from "../gamification.ts";
 import { allowedMethodsForPath } from "./route-manifest.ts";
 
 const JSON_HEADERS = { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" };
@@ -66,6 +69,9 @@ export type BackendServices = {
   analytics: AnalyticsService;
   exports: ExportService;
   backups: BackupService;
+  exam: ExamService;
+  similarity: SimilarityService;
+  gamification: GamificationService;
   ai: AiService;
   aiAdmin: AiAdminService;
   aiReview: AiReviewService;
@@ -179,6 +185,9 @@ export function createBackendApp(options: BackendOptions = {}) {
     execution: new ExecutionService(db, runner), classroom: new ClassroomService(db), notifications: new NotificationService(db, undefined, { mailer: smtpMailer, emailEnabled: options.emailEnabled ?? process.env.EMAIL_ENABLED === "true", secretCipher: masterCipher }),
     analytics: new AnalyticsService(db), exports: new ExportService(db, exportRoot),
     backups: new BackupService(db, { databasePath: options.databasePath ?? process.env.DATABASE_PATH ?? ":memory:", sourceStorageRoot: storageRoot, backupRoot, enabled: process.env.BACKUP_ENABLED === "true" }),
+    exam: new ExamService(db),
+    similarity: new SimilarityService(db),
+    gamification: new GamificationService(db),
     ai: new AiService(db, options.aiProvider ?? new ConfiguredAiProvider(db, aiAdmin)), aiAdmin, aiReview: new AiReviewService(db), audit: new AuditService(db),
   };
   const logger = options.logger ?? ((event: Record<string, unknown>) => console.error(JSON.stringify(event)));
@@ -222,6 +231,12 @@ export function createBackendApp(options: BackendOptions = {}) {
       }
       const actor = assertPasswordReady(actorOf(request, education));
       actorId = actor.id;
+      if (method === "GET" && p[0] === "gamification" && p[1] === "me" && p.length === 2) {
+        return json({ gamification: services.gamification.me(actor, url.searchParams.get("courseId") ?? undefined) }, 200, { "x-request-id": requestId });
+      }
+      if (method === "GET" && p[0] === "courses" && p[2] === "leaderboard" && p.length === 3) {
+        return json({ leaderboard: services.gamification.leaderboard(actor, id(p[1], "courseId")) }, 200, { "x-request-id": requestId });
+      }
       if (method === "POST" && p[0] === "admin" && p[1] === "users" && p.length === 2) {
         if (actor.role !== "admin") throw new DomainError("forbidden", "Administrator permission required", 403);
         const b = await input(request);
@@ -379,6 +394,11 @@ export function createBackendApp(options: BackendOptions = {}) {
       if (method === "POST" && p[0] === "submissions" && p[2] === "submit" && p.length === 3) return json({ submission: services.assignments.submit(actor, id(p[1], "submissionId")) }, 200, { "x-request-id": requestId });
       if (method === "POST" && p[0] === "submissions" && p[2] === "grade" && p.length === 3) return json({ submission: services.assignments.grade(actor, id(p[1], "submissionId"), (await input(request)) as never) }, 200, { "x-request-id": requestId });
       if (method === "POST" && p[0] === "submissions" && p[2] === "release-grade" && p.length === 3) return json({ grade: services.assignments.releaseGrade(actor, id(p[1], "submissionId")) }, 200, { "x-request-id": requestId });
+      if (method === "GET" && p[0] === "submissions" && p[2] === "exam-events" && p.length === 3) return json({ events: services.exam.listEvents(actor, id(p[1], "submissionId")) }, 200, { "x-request-id": requestId });
+      if (method === "POST" && p[0] === "submissions" && p[2] === "exam-events" && p.length === 3) {
+        const b = await input(request);
+        return json(services.exam.recordEvent(actor, id(p[1], "submissionId"), { eventType: String(b.eventType ?? ""), idempotencyKey: id(b.idempotencyKey, "idempotencyKey"), pagePath: b.pagePath ? String(b.pagePath) : undefined, payload: b.payload }), 201, { "x-request-id": requestId });
+      }
       if (method === "GET" && p[0] === "submissions" && p[2] === "questions" && p[4] === "hints" && p.length === 5) return json({ state: services.questions.studentHintState(actor, id(p[1], "submissionId"), id(p[3], "questionId")) }, 200, { "x-request-id": requestId });
       if (method === "POST" && p[0] === "submissions" && p[2] === "questions" && p[4] === "hints" && p[5] === "unlock" && p.length === 6) {
         const b = await input(request);
@@ -464,6 +484,22 @@ export function createBackendApp(options: BackendOptions = {}) {
       if (method === "POST" && p[0] === "ai" && p[1] === "artifacts" && p.length === 2) return json({ artifact: services.aiReview.create(actor, (await input(request)) as never) }, 201, { "x-request-id": requestId });
       if (method === "GET" && p[0] === "ai" && p[1] === "artifacts" && p.length === 3) return json({ artifact: actor.role === "student" ? services.aiReview.getStudent(actor, id(p[2], "artifactId")) : services.aiReview.getStaff(actor, id(p[2], "artifactId")) }, 200, { "x-request-id": requestId });
       if (method === "GET" && p[0] === "courses" && p[2] === "ai-artifacts" && p.length === 3) return json({ artifacts: services.aiReview.listStaff(actor, id(p[1], "courseId")) }, 200, { "x-request-id": requestId });
+      if (method === "GET" && p[0] === "courses" && p[2] === "code-similarity" && p.length === 3) return json({ reports: services.similarity.list(actor, id(p[1], "courseId"), url.searchParams.get("assignmentId") ?? undefined) }, 200, { "x-request-id": requestId });
+      if (method === "POST" && p[0] === "courses" && p[2] === "code-similarity" && p.length === 3) {
+        const b = await input(request);
+        return json(services.similarity.run(actor, id(p[1], "courseId"), { assignmentId: b.assignmentId ? id(b.assignmentId, "assignmentId") : undefined, threshold: b.threshold === undefined ? undefined : Number(b.threshold) }), 201, { "x-request-id": requestId });
+      }
+      if (method === "POST" && p[0] === "code-similarity-reports" && p[2] === "review" && p.length === 3) {
+        const b = await input(request);
+        const decision = b.decision === "dismissed" ? "dismissed" : b.decision === "confirmed" ? "confirmed" : null;
+        if (!decision) throw new DomainError("invalid_input", "Similarity review decision is invalid");
+        return json({ report: services.similarity.review(actor, id(p[1], "reportId"), decision, b.comment ? String(b.comment) : undefined) }, 200, { "x-request-id": requestId });
+      }
+      if (method === "GET" && p[0] === "admin" && p[1] === "gamification" && p[2] === "settings" && p.length === 3) return json({ settings: services.gamification.settings(actor) }, 200, { "x-request-id": requestId });
+      if (method === "PATCH" && p[0] === "admin" && p[1] === "gamification" && p[2] === "settings" && p.length === 3) {
+        const b = await input(request);
+        return json({ settings: services.gamification.updateSettings(actor, { xpEnabled: typeof b.xpEnabled === "boolean" ? b.xpEnabled : undefined, badgesEnabled: typeof b.badgesEnabled === "boolean" ? b.badgesEnabled : undefined, streaksEnabled: typeof b.streaksEnabled === "boolean" ? b.streaksEnabled : undefined, leaderboardEnabled: typeof b.leaderboardEnabled === "boolean" ? b.leaderboardEnabled : undefined }) }, 200, { "x-request-id": requestId });
+      }
       if (method === "POST" && p[0] === "ai" && p[1] === "artifacts" && p[3] === "review" && p.length === 4) {
         const b = await input(request);
         return json({ artifact: services.aiReview.review(actor, id(p[2], "artifactId"), b.decision === "rejected" ? "rejected" : "approved", b.comment ? String(b.comment) : undefined) }, 200, { "x-request-id": requestId });

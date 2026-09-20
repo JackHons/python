@@ -7,7 +7,7 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { ApiError, learningApi, sortAssignmentsByDue, type AdminStatusDto, type AiArtifactDto, type AiGeneratedArtifactType, type AiQuestionArtifactContent, type AiProviderDto, type AiSettingsDto, type AiStatusDto, type AnalyticsDto, type AnnouncementDto, type AssignmentDto, type AssignmentItemDto, type AuditLogDto, type BackupDto, type ClassDto, type ClassroomSessionDto, type ClassroomStateDto, type CourseDto, type EmailDeliveryDto, type EmailSettingsDto, type ExecutionDto, type ExportFormat, type ExportJobDto, type ExportReportType, type ExportStatus, type FileAssetDto, type MaterialConversionDto, type MaterialDto, type MaterialPreviewDto, type NotificationDto, type QuestionDto, type QuestionHintDto, type QuestionLibraryItemDto, type SessionUser, type StudentQuestionDto, type SubmissionDto, type SubmissionListDto, type UnitDto, type UserDto } from "./lib/api-client";
+import { ApiError, learningApi, sortAssignmentsByDue, type AdminStatusDto, type AiArtifactDto, type AiGeneratedArtifactType, type AiQuestionArtifactContent, type AiProviderDto, type AiSettingsDto, type AiStatusDto, type AnalyticsDto, type AnnouncementDto, type AssignmentDto, type AssignmentItemDto, type AuditLogDto, type BackupDto, type ClassDto, type ClassroomSessionDto, type ClassroomStateDto, type CodeSimilarityReportDto, type CourseDto, type EmailDeliveryDto, type EmailSettingsDto, type ExecutionDto, type ExportFormat, type ExportJobDto, type ExportReportType, type ExportStatus, type FileAssetDto, type GamificationDto, type MaterialConversionDto, type MaterialDto, type MaterialPreviewDto, type NotificationDto, type QuestionDto, type QuestionHintDto, type QuestionLibraryItemDto, type SessionUser, type StudentQuestionDto, type SubmissionDto, type SubmissionListDto, type UnitDto, type UserDto } from "./lib/api-client";
 import { PORTAL_ROUTES, compatiblePath, resolvePortalPath, roleHome, safeReturnTo } from "./lib/portal-routes";
 import { hydratePortalDeepLink } from "./lib/deep-link-loader";
 import { LatestRequestGate } from "./lib/latest-request";
@@ -72,6 +72,7 @@ export default function Home() {
   const [assignments, setAssignments] = useState<AssignmentDto[]>([]);
   const [notifications, setNotifications] = useState<NotificationDto[]>([]);
   const [studentClassrooms, setStudentClassrooms] = useState<ClassroomSessionDto[]>([]);
+  const [gamification, setGamification] = useState<GamificationDto | null>(null);
   const [teacherCourses, setTeacherCourses] = useState<CourseDto[]>([]);
   const [adminStatus, setAdminStatus] = useState<AdminStatusDto | null>(null);
   const [routePath, setRoutePath] = useState("/");
@@ -111,6 +112,11 @@ export default function Home() {
     else setStaffView(route.section as StaffView);
   }
   function navigatePath(path: string) {
+    if (role === "student" && activeSubmission?.exam_mode === 1 && activeSubmission.status === "draft" && !path.startsWith("/student/practice/" + encodeURIComponent(activeSubmission.id))) {
+      void learningApi.recordExamEvent(activeSubmission.id, { eventType: "route_blocked", idempotencyKey: crypto.randomUUID(), pagePath: path });
+      showToast(L("考試進行中，其他平台頁面已暫時鎖定", "Other platform pages are locked during the exam"));
+      return;
+    }
     const route = resolvePortalPath(path);
     if (!route || route.role !== role) return setRouteError("forbidden");
     router.push(path);
@@ -138,6 +144,10 @@ export default function Home() {
       })
       .catch(() => setAuthError(language === "zh" ? "資料暫時無法載入，請重試。" : "Data could not be loaded. Please retry."));
   }, [authState, demoMode, role, language]);
+  useEffect(() => {
+    if (authState !== "authenticated" || demoMode || role !== "student") { setGamification(null); return; }
+    learningApi.gamificationMe().then(({ gamification: result }) => setGamification(result)).catch(() => setGamification(null));
+  }, [authState, demoMode, role]);
 
   function hydrateSubmission(submission: SubmissionDto) {
     const answer = submission.answers[0];
@@ -202,6 +212,20 @@ export default function Home() {
     setToast(message);
     window.setTimeout(() => setToast(""), 2200);
   }
+
+  useEffect(() => {
+    if (role !== "student" || activeSubmission?.exam_mode !== 1 || activeSubmission.status !== "draft") return;
+    const submissionId = activeSubmission.id;
+    const record = (eventType: "tab_hidden" | "tab_visible" | "focus_lost", payload: Record<string, unknown> = {}) => {
+      void learningApi.recordExamEvent(submissionId, { eventType, idempotencyKey: crypto.randomUUID(), pagePath: window.location.pathname, payload });
+    };
+    const onVisibility = () => record(document.visibilityState === "hidden" ? "tab_hidden" : "tab_visible", { visibilityState: document.visibilityState });
+    const onBlur = () => record("focus_lost");
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("blur", onBlur);
+    record("tab_visible", { visibilityState: document.visibilityState });
+    return () => { document.removeEventListener("visibilitychange", onVisibility); window.removeEventListener("blur", onBlur); };
+  }, [activeSubmission?.exam_mode, activeSubmission?.id, activeSubmission?.status, role]);
 
   async function logout() {
     await learningApi.logout().catch(() => undefined);
@@ -340,6 +364,7 @@ export default function Home() {
         user={authUser}
         logout={logout}
         navigatePath={navigatePath}
+        streak={gamification?.streak.current_streak ?? 0}
       />
 
       <div className="portal-layout">
@@ -348,7 +373,7 @@ export default function Home() {
         {routeError && <RouteAccessError L={L} kind={routeError} home={() => navigatePath(roleHome(role))} />}
         {!routeError && <>
         {role === "student" && studentView === "home" && (
-          <StudentHome L={L} navigatePath={navigatePath} courses={courses} assignments={assignments} classrooms={studentClassrooms} notifications={notifications} startAssignment={startAssignment} onNotificationRead={(id) => void learningApi.markNotificationRead(id).then(() => setNotifications((current) => current.map((item) => item.id === id ? { ...item, read_at: new Date().toISOString() } : item))).catch(() => showToast(L("通知暫時無法標記為已讀", "Unable to mark notification as read")))} />
+          <StudentHome L={L} navigatePath={navigatePath} courses={courses} assignments={assignments} classrooms={studentClassrooms} notifications={notifications} gamification={gamification} startAssignment={startAssignment} onNotificationRead={(id) => void learningApi.markNotificationRead(id).then(() => setNotifications((current) => current.map((item) => item.id === id ? { ...item, read_at: new Date().toISOString() } : item))).catch(() => showToast(L("通知暫時無法標記為已讀", "Unable to mark notification as read")))} />
         )}
         {role === "student" && studentView === "courses" && <StudentCourses L={L} courses={courses} units={courseUnits} materials={resourceMaterials} assignments={assignments} routePath={routePath} navigatePath={navigatePath} joinCourse={joinCourse} />}
         {role === "student" && studentView === "notifications" && <StudentNotifications L={L} notifications={notifications} onNotificationRead={(id) => void learningApi.markNotificationRead(id).then(() => setNotifications((current) => current.map((item) => item.id === id ? { ...item, read_at: new Date().toISOString() } : item))).catch(() => showToast(L("通知暫時無法標記為已讀", "Unable to mark notification as read")))} />}
@@ -391,7 +416,7 @@ export default function Home() {
         {role === "teacher" && staffView === "classes" && <TeacherClassManager L={L} courses={teacherCourses} showToast={showToast} />}
         {role === "teacher" && staffView === "announcements" && <TeacherAnnouncements L={L} courses={teacherCourses} showToast={showToast} />}
         {role === "teacher" && staffView === "exports" && <TeacherExportCentre L={L} courses={teacherCourses} showToast={showToast} />}
-        {role === "teacher" && staffView === "assessment" && <><TeacherAssignmentPolicy L={L} courses={teacherCourses} showToast={showToast} /><TeacherPackagePolicy L={L} courses={teacherCourses} showToast={showToast} /><TeacherGradingDesk L={L} courses={teacherCourses} showToast={showToast} initialAssignmentId={routePath.match(/^\/teacher\/assignments\/([^/]+)\/submissions$/)?.[1]} /></>}
+        {role === "teacher" && staffView === "assessment" && <><TeacherAssignmentPolicy L={L} courses={teacherCourses} showToast={showToast} /><TeacherPackagePolicy L={L} courses={teacherCourses} showToast={showToast} /><TeacherSimilarityDesk L={L} courses={teacherCourses} showToast={showToast} /><TeacherGradingDesk L={L} courses={teacherCourses} showToast={showToast} initialAssignmentId={routePath.match(/^\/teacher\/assignments\/([^/]+)\/submissions$/)?.[1]} /></>}
         {role === "teacher" && staffView === "classrooms" && <TeacherLiveClass L={L} courses={teacherCourses} routePath={routePath} navigatePath={navigatePath} showToast={showToast} />}
         {role === "teacher" && staffView === "analytics-ai" && <TeacherAnalyticsDashboard L={L} courses={teacherCourses} initialReport="ai-usage" />}
         {role === "teacher" && staffView === "ai" && <><TeacherAiReviewQueue L={L} courses={teacherCourses} showToast={showToast} /><TeacherHintManager L={L} courses={teacherCourses} showToast={showToast} /></>}
@@ -485,6 +510,7 @@ function TopNavigation({
   user,
   logout,
   navigatePath,
+  streak,
 }: {
   L: Translator;
   language: Language;
@@ -497,6 +523,7 @@ function TopNavigation({
   user: SessionUser | null;
   logout: () => Promise<void>;
   navigatePath: (path: string) => void;
+  streak: number;
 }) {
   const studentPath: Record<StudentView, string> = { home: "/student/dashboard", courses: "/student/courses", notifications: "/student/notifications", missions: "/student/dashboard", practice: "/student/courses", resources: "/student/courses", classrooms: "/student/classrooms" };
   const teacherPath: Partial<Record<StaffView, string>> = { dashboard: "/teacher/dashboard", content: "/teacher/courses", materials: "/teacher/courses", classes: "/teacher/classes", announcements: "/teacher/announcements", exports: "/teacher/exports", assessment: "/teacher/courses", ai: "/teacher/ai-review" };
@@ -526,7 +553,7 @@ function TopNavigation({
       </nav>
 
       <div className="header-actions">
-        <span className="streak-pill" title={L("連續學習", "Learning streak")}>🔥 <strong>6</strong></span>
+        <span className="streak-pill" title={L("連續學習", "Learning streak")}>🔥 <strong>{streak}</strong></span>
         <div className="language-switch" aria-label={L("語言", "Language")}>
           <button type="button" className={language === "zh" ? "selected" : ""} onClick={() => setLanguage("zh")}>中</button>
           <button type="button" className={language === "en" ? "selected" : ""} onClick={() => setLanguage("en")}>EN</button>
@@ -566,6 +593,7 @@ function StudentHome({
   assignments,
   classrooms,
   notifications,
+  gamification,
   startAssignment,
   onNotificationRead,
 }: {
@@ -575,6 +603,7 @@ function StudentHome({
   assignments: AssignmentDto[];
   classrooms: ClassroomSessionDto[];
   notifications: NotificationDto[];
+  gamification: GamificationDto | null;
   startAssignment: (assignmentId: string) => Promise<void>;
   onNotificationRead: (notificationId: string) => void;
 }) {
@@ -612,6 +641,12 @@ function StudentHome({
           </div>
         </div>
         <CodePreview L={L} />
+      </section>
+      <section className="dashboard-grid" aria-label={L("學習成就", "Learning achievements")}>
+        <DashboardCard eyebrow={L("學習成就", "Learning achievements")} action={L("來自提交紀錄", "From submission activity")}>
+          <div className="dashboard-card-main"><strong>{gamification?.xp ?? 0} XP</strong><span>{L("連續學習", "Learning streak")}: {gamification?.streak.current_streak ?? 0} {L("日", "days")}</span></div>
+          <small>{gamification?.badges.length ?? 0} {L("枚已取得徽章", "badges earned")}</small>
+        </DashboardCard>
       </section>
 
       <section className="overview-grid" aria-label={L("學習概況", "Learning overview")}>
@@ -1405,13 +1440,14 @@ function TeacherAssignmentPolicy({ L, courses, showToast }: { L: Translator; cou
   const [randomizeOrder, setRandomizeOrder] = useState(false);
   const [showScoreImmediately, setShowScoreImmediately] = useState(true);
   const [showTestResultsImmediately, setShowTestResultsImmediately] = useState(true);
+  const [examMode, setExamMode] = useState(false);
   const [questionCount, setQuestionCount] = useState(0);
   const [error, setError] = useState("");
   useEffect(() => { if (!courseId && courses[0]) setCourseId(courses[0].id); }, [courses, courseId]);
   useEffect(() => { if (!courseId) return; learningApi.assignments(courseId).then((result) => setItems(result.assignments)).catch((caught: unknown) => setError(caught instanceof Error ? caught.message : L("功課載入失敗", "Assignments could not be loaded"))); }, [courseId]);
-  function choose(id: string) { setAssignmentId(id); const item = items.find((assignment) => assignment.id === id); if (!item) return; const local = (value?: string | null) => value ? new Date(value).toISOString().slice(0, 16) : ""; setPublishAt(local(item.publish_at)); setDueAt(local(item.due_at)); setAnswerReleaseAt(local(item.answer_release_at)); setMaxAttempts(item.max_attempts); setAllowLate(Boolean(item.allow_late)); setAllowResubmit(Boolean(item.allow_resubmit)); setRandomizeOrder(Boolean(item.randomize_order)); setShowScoreImmediately(item.show_score_immediately === undefined ? true : Boolean(item.show_score_immediately)); setShowTestResultsImmediately(item.show_test_results_immediately === undefined ? true : Boolean(item.show_test_results_immediately)); setQuestionCount(item.question_selection_count ?? 0); }
-  async function save(event: React.FormEvent) { event.preventDefault(); try { await learningApi.updateAssignment(assignmentId, { publishAt: publishAt ? new Date(publishAt).toISOString() : null, dueAt: dueAt ? new Date(dueAt).toISOString() : null, answerReleaseAt: answerReleaseAt ? new Date(answerReleaseAt).toISOString() : null, maxAttempts, allowLate, allowResubmit, randomizeOrder, questionSelectionCount: questionCount || null, showScoreImmediately, showTestResultsImmediately }); showToast(L("功課政策已保存", "Assignment policy saved")); setItems((await learningApi.assignments(courseId)).assignments); } catch (caught) { setError(caught instanceof Error ? caught.message : L("政策保存失敗", "Policy save failed")); } }
-  return <section className="settings-card assignment-policy"><div className="page-heading"><div><span className="grade-tag">{L("功課政策", "ASSIGNMENT POLICY")}</span><h2>{L("發布、截止與重交", "Release, deadline and resubmission")}</h2></div></div>{error && <p role="alert" className="form-error">{error}</p>}<form className="form-grid" onSubmit={save}><label>{L("課程", "Course")}<select value={courseId} onChange={(event) => { setCourseId(event.target.value); setAssignmentId(""); }}><option value="">—</option>{courses.map((course) => <option key={course.id} value={course.id}>{course.title_zh}</option>)}</select></label><label>{L("功課", "Assignment")}<select value={assignmentId} onChange={(event) => choose(event.target.value)}><option value="">—</option>{items.map((item) => <option key={item.id} value={item.id}>{item.title_zh}</option>)}</select></label><label>{L("發布時間", "Publish time")}<input type="datetime-local" value={publishAt} onChange={(event) => setPublishAt(event.target.value)} /></label><label>{L("截止時間", "Due time")}<input type="datetime-local" value={dueAt} onChange={(event) => setDueAt(event.target.value)} /></label><label>{L("答案公布時間", "Answer release time")}<input type="datetime-local" value={answerReleaseAt} onChange={(event) => setAnswerReleaseAt(event.target.value)} /></label><label>{L("最多作答次數", "Maximum attempts")}<input type="number" min="1" value={maxAttempts} onChange={(event) => setMaxAttempts(Number(event.target.value))} /></label><label>{L("抽題數（0=全部）", "Question count (0=all)")}<input type="number" min="0" value={questionCount} onChange={(event) => setQuestionCount(Number(event.target.value))} /></label><label><input type="checkbox" checked={allowLate} onChange={(event) => setAllowLate(event.target.checked)} />{L("允許逾期", "Allow late")}</label><label><input type="checkbox" checked={allowResubmit} onChange={(event) => setAllowResubmit(event.target.checked)} />{L("允許補交／重交", "Allow resubmission")}</label><label><input type="checkbox" checked={randomizeOrder} onChange={(event) => setRandomizeOrder(event.target.checked)} />{L("隨機排列題目", "Randomize questions")}</label><label><input type="checkbox" checked={showScoreImmediately} onChange={(event) => setShowScoreImmediately(event.target.checked)} />{L("提交後立即顯示分數", "Show score immediately after submission")}</label><label><input type="checkbox" checked={showTestResultsImmediately} onChange={(event) => setShowTestResultsImmediately(event.target.checked)} />{L("提交後立即顯示測試結果", "Show test results immediately after submission")}</label><button type="submit" disabled={!assignmentId}>{L("保存政策", "Save policy")}</button></form></section>;
+  function choose(id: string) { setAssignmentId(id); const item = items.find((assignment) => assignment.id === id); if (!item) return; const local = (value?: string | null) => value ? new Date(value).toISOString().slice(0, 16) : ""; setPublishAt(local(item.publish_at)); setDueAt(local(item.due_at)); setAnswerReleaseAt(local(item.answer_release_at)); setMaxAttempts(item.max_attempts); setAllowLate(Boolean(item.allow_late)); setAllowResubmit(Boolean(item.allow_resubmit)); setRandomizeOrder(Boolean(item.randomize_order)); setShowScoreImmediately(item.show_score_immediately === undefined ? true : Boolean(item.show_score_immediately)); setShowTestResultsImmediately(item.show_test_results_immediately === undefined ? true : Boolean(item.show_test_results_immediately)); setExamMode(Boolean(item.exam_mode)); setQuestionCount(item.question_selection_count ?? 0); }
+  async function save(event: React.FormEvent) { event.preventDefault(); try { await learningApi.updateAssignment(assignmentId, { publishAt: publishAt ? new Date(publishAt).toISOString() : null, dueAt: dueAt ? new Date(dueAt).toISOString() : null, answerReleaseAt: answerReleaseAt ? new Date(answerReleaseAt).toISOString() : null, maxAttempts, allowLate, allowResubmit, randomizeOrder, questionSelectionCount: questionCount || null, showScoreImmediately, showTestResultsImmediately, examMode }); showToast(L("功課政策已保存", "Assignment policy saved")); setItems((await learningApi.assignments(courseId)).assignments); } catch (caught) { setError(caught instanceof Error ? caught.message : L("政策保存失敗", "Policy save failed")); } }
+  return <section className="settings-card assignment-policy"><div className="page-heading"><div><span className="grade-tag">{L("功課政策", "ASSIGNMENT POLICY")}</span><h2>{L("發布、截止與重交", "Release, deadline and resubmission")}</h2></div></div>{error && <p role="alert" className="form-error">{error}</p>}<form className="form-grid" onSubmit={save}><label>{L("課程", "Course")}<select value={courseId} onChange={(event) => { setCourseId(event.target.value); setAssignmentId(""); }}><option value="">—</option>{courses.map((course) => <option key={course.id} value={course.id}>{course.title_zh}</option>)}</select></label><label>{L("功課", "Assignment")}<select value={assignmentId} onChange={(event) => choose(event.target.value)}><option value="">—</option>{items.map((item) => <option key={item.id} value={item.id}>{item.title_zh}</option>)}</select></label><label>{L("發布時間", "Publish time")}<input type="datetime-local" value={publishAt} onChange={(event) => setPublishAt(event.target.value)} /></label><label>{L("截止時間", "Due time")}<input type="datetime-local" value={dueAt} onChange={(event) => setDueAt(event.target.value)} /></label><label>{L("答案公布時間", "Answer release time")}<input type="datetime-local" value={answerReleaseAt} onChange={(event) => setAnswerReleaseAt(event.target.value)} /></label><label>{L("最多作答次數", "Maximum attempts")}<input type="number" min="1" value={maxAttempts} onChange={(event) => setMaxAttempts(Number(event.target.value))} /></label><label>{L("抽題數（0=全部）", "Question count (0=all)")}<input type="number" min="0" value={questionCount} onChange={(event) => setQuestionCount(Number(event.target.value))} /></label><label><input type="checkbox" checked={allowLate} onChange={(event) => setAllowLate(event.target.checked)} />{L("允許逾期", "Allow late")}</label><label><input type="checkbox" checked={allowResubmit} onChange={(event) => setAllowResubmit(event.target.checked)} />{L("允許補交／重交", "Allow resubmission")}</label><label><input type="checkbox" checked={randomizeOrder} onChange={(event) => setRandomizeOrder(event.target.checked)} />{L("隨機排列題目", "Randomize questions")}</label><label><input type="checkbox" checked={showScoreImmediately} onChange={(event) => setShowScoreImmediately(event.target.checked)} />{L("提交後立即顯示分數", "Show score immediately after submission")}</label><label><input type="checkbox" checked={showTestResultsImmediately} onChange={(event) => setShowTestResultsImmediately(event.target.checked)} />{L("提交後立即顯示測試結果", "Show test results immediately after submission")}</label><label><input type="checkbox" checked={examMode} onChange={(event) => setExamMode(event.target.checked)} />{L("考試模式（限制教材／提示／AI，記錄切頁）", "Exam mode (restrict resources, hints and AI; log tab changes)")}</label><button type="submit" disabled={!assignmentId}>{L("保存政策", "Save policy")}</button></form></section>;
 }
 
 function TeacherAiReviewQueue({ L, courses, showToast }: { L: Translator; courses: CourseDto[]; showToast: (message: string) => void }) {
@@ -1518,6 +1554,23 @@ function TeacherPackagePolicy({ L, courses, showToast }: { L: Translator; course
   useEffect(() => { if (!courseId) return; learningApi.executionPolicy(courseId).then(({ policy }) => { setSupported(policy.supportedPackages); setAllowed(policy.allowedPackages); setError(""); }).catch((caught: unknown) => setError(caught instanceof Error ? caught.message : L("套件政策載入失敗", "Package policy could not be loaded"))); }, [courseId]);
   async function save() { try { const result = await learningApi.updateExecutionPolicy(courseId, allowed); setAllowed(result.policy.allowedPackages); showToast(L("Python 套件政策已保存", "Python package policy saved")); } catch (caught) { setError(caught instanceof Error ? caught.message : L("套件政策保存失敗", "Package policy save failed")); } }
   return <section className="settings-card package-policy"><div className="page-heading"><div><span className="grade-tag">{L("Python 執行政策", "PYTHON EXECUTION POLICY")}</span><h2>{L("教師選擇可用套件", "Teacher-selected packages")}</h2><p>{L("標準函式庫可用；pip、外網及未勾選的第三方套件會由 Runner 拒絕。", "The standard library remains available; pip, networking and unselected third-party packages are rejected by the Runner.")}</p></div></div>{error && <p role="alert" className="form-error">{error}</p>}<label>{L("課程", "Course")}<select value={courseId} onChange={(event) => setCourseId(event.target.value)}><option value="">—</option>{courses.map((course) => <option key={course.id} value={course.id}>{course.title_zh}</option>)}</select></label><fieldset><legend>{L("允許套件", "Allowed packages")}</legend>{supported.map((item) => <label key={item}><input type="checkbox" checked={allowed.includes(item)} onChange={(event) => setAllowed((current) => event.target.checked ? [...new Set([...current, item])] : current.filter((value) => value !== item))} />{item}</label>)}</fieldset><button type="button" disabled={!courseId} onClick={() => void save()}>{L("保存套件政策", "Save package policy")}</button></section>;
+}
+
+function TeacherSimilarityDesk({ L, courses, showToast }: { L: Translator; courses: CourseDto[]; showToast: (message: string) => void }) {
+  const [courseId, setCourseId] = useState("");
+  const [assignments, setAssignments] = useState<AssignmentDto[]>([]);
+  const [assignmentId, setAssignmentId] = useState("");
+  const [reports, setReports] = useState<CodeSimilarityReportDto[]>([]);
+  const [threshold, setThreshold] = useState(0.8);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { if (!courseId && courses[0]) setCourseId(courses[0].id); }, [courses, courseId]);
+  useEffect(() => { if (!courseId) return; learningApi.assignments(courseId).then((result) => { setAssignments(result.assignments); setAssignmentId((current) => result.assignments.some((item) => item.id === current) ? current : result.assignments[0]?.id ?? ""); }).catch((caught: unknown) => setError(caught instanceof Error ? caught.message : L("功課載入失敗", "Assignments could not be loaded"))); }, [courseId]);
+  async function refresh() { if (!courseId) return; try { setReports((await learningApi.codeSimilarity(courseId, assignmentId || undefined)).reports); setError(""); } catch (caught) { setError(caught instanceof Error ? caught.message : L("相似度報告載入失敗", "Similarity reports could not be loaded")); } }
+  useEffect(() => { void refresh(); }, [courseId, assignmentId]);
+  async function run() { if (!courseId) return; setBusy(true); try { const result = await learningApi.runCodeSimilarity(courseId, assignmentId || undefined, threshold); setReports(result.reports); showToast(L(`已比較 ${result.comparedAnswers} 份程式答案`, `Compared ${result.comparedAnswers} code answers`)); } catch (caught) { setError(caught instanceof Error ? caught.message : L("相似度分析失敗", "Similarity analysis failed")); } finally { setBusy(false); } }
+  async function review(report: CodeSimilarityReportDto, decision: "confirmed" | "dismissed") { try { const result = await learningApi.reviewCodeSimilarity(report.id, decision); setReports((current) => current.map((item) => item.id === report.id ? result.report : item)); } catch (caught) { setError(caught instanceof Error ? caught.message : L("相似度覆核失敗", "Similarity review failed")); } }
+  return <section className="settings-card similarity-desk"><div className="page-heading"><div><span className="grade-tag">{L("程式相似度", "CODE SIMILARITY")}</span><h2>{L("教師覆核相似度報告", "Teacher-reviewed similarity reports")}</h2><p>{L("只比較已提交的程式答案；報告不自動判定抄襲，教師可確認或駁回。", "Only submitted code answers are compared; reports never declare plagiarism automatically.")}</p></div></div>{error && <p className="form-error" role="alert">{error}</p>}<div className="editor-controls"><label>{L("課程", "Course")}<select value={courseId} onChange={(event) => { setCourseId(event.target.value); setAssignmentId(""); }}><option value="">—</option>{courses.map((course) => <option key={course.id} value={course.id}>{languageText(course.title_zh, course.title_en, L)}</option>)}</select></label><label>{L("功課（可選）", "Assignment (optional)")}<select value={assignmentId} onChange={(event) => setAssignmentId(event.target.value)}><option value="">{L("全部", "All")}</option>{assignments.map((assignment) => <option key={assignment.id} value={assignment.id}>{assignment.title_zh}</option>)}</select></label><label>{L("門檻", "Threshold")}<input type="number" min="0.5" max="0.99" step="0.01" value={threshold} onChange={(event) => setThreshold(Number(event.target.value))} /></label><button type="button" disabled={busy || !courseId} onClick={() => void run()}>{busy ? L("分析中…", "Analysing…") : L("重新分析", "Run analysis")}</button></div>{reports.length ? <ul className="data-list">{reports.map((report) => <li key={report.id}><span><b>{report.student_a_name} ↔ {report.student_b_name}</b><small>{report.assignment_title} · {Math.round(report.similarity * 100)}% · {report.status}</small></span>{report.status === "pending_review" && <div className="editor-controls"><button type="button" onClick={() => void review(report, "confirmed")}>{L("確認", "Confirm")}</button><button type="button" className="secondary-action" onClick={() => void review(report, "dismissed")}>{L("駁回", "Dismiss")}</button></div>}</li>)}</ul> : <p className="empty-copy">{L("尚無達到門檻的已提交程式配對。", "No submitted code pairs meet the threshold yet.")}</p>}</section>;
 }
 
 function TeacherGradingDesk({ L, courses, showToast, initialAssignmentId }: { L: Translator; courses: CourseDto[]; showToast: (message: string) => void; initialAssignmentId?: string }) {

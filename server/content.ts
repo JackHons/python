@@ -5,6 +5,8 @@ import type { LocalDatabase } from "./db.ts";
 import { DomainError } from "./errors.ts";
 import { LocalFileStorage, validateFileMetadata, validateFileSignature } from "./storage.ts";
 import { assertAssignmentSubmissionOpen } from "./classroom/guard.ts";
+import { activeExam, assertExamResourceAccess } from "./exam.ts";
+import { GamificationService } from "./gamification.ts";
 
 const STAFF = new Set(["admin", "teacher"]);
 const QUESTION_TYPES = new Set(["multiple_choice", "fill_blank", "short_answer", "code_fill", "python_code", "file_upload", "project_upload"]);
@@ -285,6 +287,7 @@ export class MaterialService {
   listMaterials(actor: Actor, unitId: string) {
     const unit = requireRow(this.unit(unitId), "Unit not found");
     if (!canViewActiveCourse(this.db, actor, unit.course_id)) throw new DomainError("not_found", "Unit not found", 404);
+    assertExamResourceAccess(this.db, actor, unit.course_id);
     if (actor.role === "student" && (unit.status !== "published" || unit.course_status !== "published")) throw new DomainError("not_found", "Unit not found", 404);
     const projection = `SELECT m.id, m.unit_id, m.file_asset_id, m.asset_binding_mode, m.kind, m.title_zh, m.title_en, m.body_zh, m.body_en, m.source_url, m.position, m.allow_download, m.status, m.published_at,
       fa.original_name AS file_name, fa.mime_type AS file_mime_type, fa.byte_size AS file_byte_size, fa.status AS file_status, fa.library_scope AS file_library_scope,
@@ -347,12 +350,14 @@ export class MaterialService {
   getConversionStatus(actor: Actor, materialId: string) {
     const material = requireRow(this.material(materialId), "Material not found");
     if (!canViewActiveCourse(this.db, actor, material.course_id)) throw new DomainError("not_found", "Material not found", 404);
+    assertExamResourceAccess(this.db, actor, material.course_id);
     if (actor.role === "student" && (material.status !== "published" || material.unit_status !== "published" || material.course_status !== "published" || (parseTime(material.published_at)?.getTime() ?? 0) > this.clock().getTime())) throw new DomainError("not_found", "Material not found", 404);
     return this.db.get("SELECT id, material_id, output_asset_id, kind, status, error_code, error_message, page_count, created_at, started_at, finished_at FROM material_conversion_jobs WHERE material_id = ? ORDER BY created_at DESC, id DESC LIMIT 1", [materialId]) ?? null;
   }
   private previewJob(actor: Actor, materialId: string) {
     const material = requireRow(this.material(materialId), "Material not found");
     if (!canViewActiveCourse(this.db, actor, material.course_id)) throw new DomainError("not_found", "Material not found", 404);
+    assertExamResourceAccess(this.db, actor, material.course_id);
     if (actor.role === "student" && (material.status !== "published" || material.unit_status !== "published" || material.course_status !== "published" || (parseTime(material.published_at)?.getTime() ?? 0) > this.clock().getTime())) throw new DomainError("not_found", "Material not found", 404);
     return requireRow(this.db.get<Record<string, any>>(`SELECT j.id, j.output_asset_id, j.page_count, f.storage_key, f.original_name, f.mime_type, f.status AS asset_status
       FROM material_conversion_jobs j JOIN file_assets f ON f.id = j.output_asset_id
@@ -383,6 +388,7 @@ export class MaterialService {
   }
   async downloadMaterial(actor: Actor, materialId: string) {
     const material = requireRow(this.db.get<{ course_id: string; file_asset_id: string | null; status: string; unit_status: string; course_status: string; allow_download: number; published_at: string | null }>("SELECT u.course_id, m.file_asset_id, m.status, u.status AS unit_status, c.status AS course_status, m.allow_download, m.published_at FROM materials m JOIN units u ON u.id = m.unit_id JOIN courses c ON c.id = u.course_id WHERE m.id = ?", [materialId]), "Material not found");
+    assertExamResourceAccess(this.db, actor, material.course_id);
     if (!material.file_asset_id || !material.allow_download) throw new DomainError("download_unavailable", "Material download is unavailable", 404);
     if (actor.role === "student" && (material.status !== "published" || material.unit_status !== "published" || material.course_status !== "published" || !canViewActiveCourse(this.db, actor, material.course_id) || (parseTime(material.published_at)?.getTime() ?? 0) > this.clock().getTime())) throw new DomainError("not_found", "Material not found", 404);
     if (actor.role === "teacher" && (!canViewActiveCourse(this.db, actor, material.course_id) || !canManageCourse(this.db, actor, material.course_id))) throw new DomainError("not_found", "Material not found", 404);
@@ -533,6 +539,8 @@ export class QuestionService {
     if (actor.role !== "student") throw new DomainError("forbidden", "Student permission required", 403);
     const answer = this.db.get<Record<string, any>>("SELECT s.student_id, s.status, a.ai_assistant_enabled FROM submissions s JOIN submission_answers sa ON sa.submission_id = s.id JOIN assignments a ON a.id = s.assignment_id JOIN questions q ON q.id = sa.question_id AND q.course_id = a.course_id JOIN courses c ON c.id = a.course_id JOIN course_enrollments ce ON ce.course_id = c.id AND ce.student_id = s.student_id WHERE s.id = ? AND sa.question_id = ? AND s.student_id = ? AND ce.status = 'active' AND c.status = 'published' AND a.status IN ('published', 'closed') AND (a.publish_at IS NULL OR a.publish_at <= ?)", [submissionId, questionId, actor.id, now(this.clock)]);
     if (!answer || answer.student_id !== actor.id) throw new DomainError("not_found", "Submission question not found", 404);
+    const course = this.db.get<{ course_id: string }>("SELECT course_id FROM assignments WHERE id = (SELECT assignment_id FROM submissions WHERE id = ?)", [submissionId]);
+    if (course) assertExamResourceAccess(this.db, actor, course.course_id);
     const unlocked = this.db.all("SELECT u.level, u.source, u.unlocked_at, h.content_zh, h.content_en FROM student_hint_unlocks u JOIN question_hints h ON h.id = u.hint_id AND h.status = 'approved' WHERE u.student_id = ? AND u.submission_id = ? AND u.question_id = ? ORDER BY u.level", [actor.id, submissionId, questionId]);
     const approvedLevels = this.db.all<{ level: number }>("SELECT level FROM question_hints WHERE question_id = ? AND status = 'approved' AND level <= ? ORDER BY level", [questionId, this.maxHintLayers()]);
     let contiguous = 0;
@@ -689,9 +697,10 @@ export class AssignmentService {
     return assignment;
   }
 
-  createAssignment(actor: Actor, input: { courseId: string; unitId?: string; kind?: "practice" | "homework" | "quiz" | "exam"; titleZh: string; titleEn?: string; instructionsZh?: string; instructionsEn?: string; publishAt?: string; dueAt?: string; answerReleaseAt?: string; maxAttempts?: number; allowLate?: boolean; allowResubmit?: boolean; randomizeOrder?: boolean; questionSelectionCount?: number; showScoreImmediately?: boolean; showTestResultsImmediately?: boolean; aiAssistantEnabled?: boolean }) {
+  createAssignment(actor: Actor, input: { courseId: string; unitId?: string; kind?: "practice" | "homework" | "quiz" | "exam"; titleZh: string; titleEn?: string; instructionsZh?: string; instructionsEn?: string; publishAt?: string; dueAt?: string; answerReleaseAt?: string; maxAttempts?: number; allowLate?: boolean; allowResubmit?: boolean; randomizeOrder?: boolean; questionSelectionCount?: number; showScoreImmediately?: boolean; showTestResultsImmediately?: boolean; aiAssistantEnabled?: boolean; examMode?: boolean }) {
     this.manage(actor, input.courseId);
     if (!txt(input.titleZh)) throw new DomainError("invalid_input", "Assignment title is required");
+    if (input.examMode && input.kind !== "exam") throw new DomainError("invalid_input", "Exam mode requires an exam assignment");
     if (input.unitId) {
       const unit = requireRow<{ course_id: string }>(this.db.get("SELECT course_id FROM units WHERE id = ?", [input.unitId]), "Unit not found");
       if (unit.course_id !== input.courseId) throw new DomainError("invalid_reference", "Assignment unit and course must match");
@@ -704,7 +713,7 @@ export class AssignmentService {
     if (input.answerReleaseAt && !parseTime(input.answerReleaseAt)) throw new DomainError("invalid_input", "Invalid answer release time");
     if (input.publishAt && input.dueAt && parseTime(input.dueAt)!.getTime() < parseTime(input.publishAt)!.getTime()) throw new DomainError("invalid_input", "Due time must not precede publish time");
     const id = randomUUID();
-    this.db.run("INSERT INTO assignments (id, course_id, unit_id, created_by_id, kind, title_zh, title_en, instructions_zh, instructions_en, publish_at, due_at, answer_release_at, max_attempts, allow_late, allow_resubmit, randomize_order, question_selection_count, show_score_immediately, show_test_results_immediately, ai_assistant_enabled) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [id, input.courseId, input.unitId ?? null, actor.id, input.kind ?? "homework", txt(input.titleZh), txt(input.titleEn) || null, txt(input.instructionsZh) || null, txt(input.instructionsEn) || null, input.publishAt ?? null, input.dueAt ?? null, input.answerReleaseAt ?? null, maxAttempts, input.allowLate ? 1 : 0, input.allowResubmit ? 1 : 0, input.randomizeOrder ? 1 : 0, input.questionSelectionCount ?? null, input.showScoreImmediately === false ? 0 : 1, input.showTestResultsImmediately === false ? 0 : 1, input.aiAssistantEnabled === false ? 0 : 1]);
+    this.db.run("INSERT INTO assignments (id, course_id, unit_id, created_by_id, kind, title_zh, title_en, instructions_zh, instructions_en, publish_at, due_at, answer_release_at, max_attempts, allow_late, allow_resubmit, randomize_order, question_selection_count, show_score_immediately, show_test_results_immediately, ai_assistant_enabled, exam_mode) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [id, input.courseId, input.unitId ?? null, actor.id, input.kind ?? "homework", txt(input.titleZh), txt(input.titleEn) || null, txt(input.instructionsZh) || null, txt(input.instructionsEn) || null, input.publishAt ?? null, input.dueAt ?? null, input.answerReleaseAt ?? null, maxAttempts, input.allowLate ? 1 : 0, input.allowResubmit ? 1 : 0, input.randomizeOrder ? 1 : 0, input.questionSelectionCount ?? null, input.showScoreImmediately === false ? 0 : 1, input.showTestResultsImmediately === false ? 0 : 1, input.aiAssistantEnabled === false ? 0 : 1, input.examMode ? 1 : 0]);
     audit(this.db, actor.id, "assignment.created", "assignment", id, "success", { courseId: input.courseId });
     return this.assignment(id);
   }
@@ -761,7 +770,7 @@ export class AssignmentService {
     return { items, totalScore: items.reduce((sum, item) => sum + Number(item.score_override ?? item.max_score ?? 0), 0) };
   }
 
-  updateAssignment(actor: Actor, assignmentId: string, input: Partial<{ titleZh: string; titleEn: string; instructionsZh: string; instructionsEn: string; publishAt: string | null; dueAt: string | null; answerReleaseAt: string | null; maxAttempts: number; allowLate: boolean; allowResubmit: boolean; randomizeOrder: boolean; questionSelectionCount: number | null; showScoreImmediately: boolean; showTestResultsImmediately: boolean; aiAssistantEnabled: boolean; status: "draft" | "scheduled" | "published" | "closed" | "archived" }>) {
+  updateAssignment(actor: Actor, assignmentId: string, input: Partial<{ titleZh: string; titleEn: string; instructionsZh: string; instructionsEn: string; publishAt: string | null; dueAt: string | null; answerReleaseAt: string | null; maxAttempts: number; allowLate: boolean; allowResubmit: boolean; randomizeOrder: boolean; questionSelectionCount: number | null; showScoreImmediately: boolean; showTestResultsImmediately: boolean; aiAssistantEnabled: boolean; examMode: boolean; status: "draft" | "scheduled" | "published" | "closed" | "archived" }>) {
     const assignment = requireRow(this.assignment(assignmentId), "Assignment not found");
     this.manage(actor, assignment.course_id);
     const status = input.status ?? assignment.status;
@@ -778,7 +787,10 @@ export class AssignmentService {
     const itemCount = this.db.get<{ count: number }>("SELECT COUNT(*) AS count FROM assignment_items WHERE assignment_id = ?", [assignmentId])?.count ?? 0;
     const selectionCount = input.questionSelectionCount === undefined ? assignment.question_selection_count : input.questionSelectionCount;
     if (selectionCount !== null && (!Number.isInteger(selectionCount) || selectionCount < 1 || selectionCount > itemCount)) throw new DomainError("invalid_input", "Question selection count must fit the assignment question count");
-    this.db.run("UPDATE assignments SET title_zh = ?, title_en = ?, instructions_zh = ?, instructions_en = ?, publish_at = ?, due_at = ?, answer_release_at = ?, max_attempts = ?, allow_late = ?, allow_resubmit = ?, randomize_order = ?, question_selection_count = ?, show_score_immediately = ?, show_test_results_immediately = ?, ai_assistant_enabled = ?, status = ?, updated_at = ? WHERE id = ?", [txt(input.titleZh) || assignment.title_zh, txt(input.titleEn) || assignment.title_en, txt(input.instructionsZh) || assignment.instructions_zh, txt(input.instructionsEn) || assignment.instructions_en, publishAt, dueAt, answerReleaseAt, maxAttempts, input.allowLate === undefined ? assignment.allow_late : input.allowLate ? 1 : 0, input.allowResubmit === undefined ? assignment.allow_resubmit : input.allowResubmit ? 1 : 0, input.randomizeOrder === undefined ? assignment.randomize_order : input.randomizeOrder ? 1 : 0, input.questionSelectionCount === undefined ? assignment.question_selection_count : input.questionSelectionCount, input.showScoreImmediately === undefined ? assignment.show_score_immediately : input.showScoreImmediately ? 1 : 0, input.showTestResultsImmediately === undefined ? assignment.show_test_results_immediately : input.showTestResultsImmediately ? 1 : 0, input.aiAssistantEnabled === undefined ? assignment.ai_assistant_enabled : input.aiAssistantEnabled ? 1 : 0, status, now(this.clock), assignmentId]);
+    const examMode = input.examMode === undefined ? Boolean(assignment.exam_mode) : input.examMode;
+    if (examMode && assignment.kind !== "exam") throw new DomainError("invalid_input", "Exam mode requires an exam assignment");
+    if (!examMode && assignment.exam_mode && this.db.get("SELECT 1 FROM submissions WHERE assignment_id = ? AND status = 'draft'", [assignmentId])) throw new DomainError("exam_in_progress", "An active exam cannot be disabled");
+    this.db.run("UPDATE assignments SET title_zh = ?, title_en = ?, instructions_zh = ?, instructions_en = ?, publish_at = ?, due_at = ?, answer_release_at = ?, max_attempts = ?, allow_late = ?, allow_resubmit = ?, randomize_order = ?, question_selection_count = ?, show_score_immediately = ?, show_test_results_immediately = ?, ai_assistant_enabled = ?, exam_mode = ?, status = ?, updated_at = ? WHERE id = ?", [txt(input.titleZh) || assignment.title_zh, txt(input.titleEn) || assignment.title_en, txt(input.instructionsZh) || assignment.instructions_zh, txt(input.instructionsEn) || assignment.instructions_en, publishAt, dueAt, answerReleaseAt, maxAttempts, input.allowLate === undefined ? assignment.allow_late : input.allowLate ? 1 : 0, input.allowResubmit === undefined ? assignment.allow_resubmit : input.allowResubmit ? 1 : 0, input.randomizeOrder === undefined ? assignment.randomize_order : input.randomizeOrder ? 1 : 0, input.questionSelectionCount === undefined ? assignment.question_selection_count : input.questionSelectionCount, input.showScoreImmediately === undefined ? assignment.show_score_immediately : input.showScoreImmediately ? 1 : 0, input.showTestResultsImmediately === undefined ? assignment.show_test_results_immediately : input.showTestResultsImmediately ? 1 : 0, input.aiAssistantEnabled === undefined ? assignment.ai_assistant_enabled : input.aiAssistantEnabled ? 1 : 0, examMode ? 1 : 0, status, now(this.clock), assignmentId]);
     audit(this.db, actor.id, "assignment.updated", "assignment", assignmentId, "success", { status });
     return this.assignment(assignmentId);
   }
@@ -797,7 +809,7 @@ export class AssignmentService {
       const current = now(this.clock);
       return this.db.all(`SELECT a.id, a.course_id, a.unit_id, a.kind, a.title_zh, a.title_en, a.instructions_zh, a.instructions_en,
         a.publish_at, a.due_at, a.answer_release_at, a.max_attempts, a.allow_late, a.allow_resubmit, a.randomize_order,
-        a.question_selection_count, a.show_score_immediately, a.show_test_results_immediately, a.ai_assistant_enabled, a.status,
+        a.question_selection_count, a.show_score_immediately, a.show_test_results_immediately, a.ai_assistant_enabled, a.exam_mode, a.status,
         CASE WHEN a.status = 'closed' THEN 'closed'
           WHEN a.due_at IS NOT NULL AND datetime(a.due_at) < datetime(?) THEN 'past_due'
           WHEN a.due_at IS NULL THEN 'no_due'
@@ -845,7 +857,7 @@ export class AssignmentService {
   }
 
   private submissionView(actor: Actor, submissionId: string) {
-    const submission = requireRow<Record<string, any>>(this.db.get("SELECT s.*, a.course_id, a.show_score_immediately, a.show_test_results_immediately, a.answer_release_at, u.chinese_name AS student_chinese_name, u.english_name AS student_english_name, u.student_number AS student_number, g.auto_score AS grade_auto_score, g.teacher_adjusted_score, g.final_score AS grade_final_score, g.max_score AS grade_max_score, g.status AS grade_status, g.released_at AS grade_released_at FROM submissions s JOIN assignments a ON a.id = s.assignment_id JOIN users u ON u.id = s.student_id LEFT JOIN grades g ON g.submission_id = s.id WHERE s.id = ?", [submissionId]), "Submission not found");
+    const submission = requireRow<Record<string, any>>(this.db.get("SELECT s.*, a.course_id, a.exam_mode, a.show_score_immediately, a.show_test_results_immediately, a.answer_release_at, u.chinese_name AS student_chinese_name, u.english_name AS student_english_name, u.student_number AS student_number, g.auto_score AS grade_auto_score, g.teacher_adjusted_score, g.final_score AS grade_final_score, g.max_score AS grade_max_score, g.status AS grade_status, g.released_at AS grade_released_at FROM submissions s JOIN assignments a ON a.id = s.assignment_id JOIN users u ON u.id = s.student_id LEFT JOIN grades g ON g.submission_id = s.id WHERE s.id = ?", [submissionId]), "Submission not found");
     if (actor.role === "student" && submission.student_id !== actor.id) throw new DomainError("forbidden", "You cannot view this submission", 403);
     if (actor.role === "student") this.studentAssignment(actor, submission.assignment_id);
     if (STAFF.has(actor.role) && !canManageCourse(this.db, actor, submission.course_id)) throw new DomainError("not_found", "Submission not found", 404);
@@ -877,6 +889,8 @@ export class AssignmentService {
   beginSubmission(actor: Actor, assignmentId: string) {
     const assignment = this.studentAssignment(actor, assignmentId);
     assertAssignmentSubmissionOpen(this.db, assignmentId);
+    const active = activeExam(this.db, actor.id, assignment.course_id);
+    if (assignment.exam_mode && active && active.assignment_id !== assignmentId) throw new DomainError("exam_in_progress", "Another exam is already in progress", 409);
     const existing = this.db.get<{ id: string }>("SELECT id FROM submissions WHERE assignment_id = ? AND student_id = ? AND status = 'draft' ORDER BY attempt_number DESC LIMIT 1", [assignmentId, actor.id]);
     if (existing) return this.submissionView(actor, existing.id);
     const latest = this.db.get<{ attempt_number: number }>("SELECT MAX(attempt_number) AS attempt_number FROM submissions WHERE assignment_id = ? AND student_id = ?", [assignmentId, actor.id])?.attempt_number ?? 0;
@@ -951,6 +965,8 @@ export class AssignmentService {
       else this.db.run("INSERT INTO grades (id, submission_id, max_score, status) VALUES (?, ?, ?, 'review_required')", [randomUUID(), submissionId, maxScore]);
     });
     audit(this.db, actor.id, "submission.submitted", "submission", submissionId, "success", { isLate });
+    // Gamification is an optional projection; a failed award must never block a valid submission.
+    try { new GamificationService(this.db, this.clock).recordSubmission(actor, submission.course_id, submissionId); } catch { /* best effort */ }
     return this.submissionView(actor, submissionId);
   }
 
