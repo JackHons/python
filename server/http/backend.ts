@@ -226,6 +226,7 @@ export function createBackendApp(options: BackendOptions = {}) {
       }
       if (method === "GET" && p[0] === "courses" && p[2] === "assignments" && p.length === 3) return json({ assignments: services.assignments.listAssignments(actor, id(p[1], "courseId")) }, 200, { "x-request-id": requestId });
       if (method === "GET" && p[0] === "courses" && p[2] === "questions" && p.length === 3) return json({ questions: services.questions.listStaffQuestions(actor, id(p[1], "courseId")) }, 200, { "x-request-id": requestId });
+      if (method === "GET" && p[0] === "courses" && p[2] === "question-library" && p.length === 3) return json({ questions: services.questions.searchLibrary(actor, id(p[1], "courseId"), { q: url.searchParams.get("q") ?? undefined, type: url.searchParams.get("type") ?? undefined, concept: url.searchParams.get("concept") ?? undefined, limit: Number(url.searchParams.get("limit") ?? 50) }) }, 200, { "x-request-id": requestId });
       if (method === "GET" && p[0] === "assignments" && p[2] === "submissions" && p.length === 3) return json({ submissions: services.assignments.listSubmissions(actor, id(p[1], "assignmentId")) }, 200, { "x-request-id": requestId });
       if (method === "GET" && p[0] === "courses" && p[2] === "classrooms" && p.length === 3) return json({ sessions: services.classroom.listSessions(actor, id(p[1], "courseId")) }, 200, { "x-request-id": requestId });
       if (method === "POST" && p[0] === "classrooms" && p[2] === "join" && p.length === 3) return json({ classroom: services.classroom.joinSession(actor, id(p[1], "sessionId")) }, 200, { "x-request-id": requestId });
@@ -309,6 +310,10 @@ export function createBackendApp(options: BackendOptions = {}) {
       if (method === "POST" && p[0] === "questions" && p.length === 1) {
         const b = await input(request);
         return json({ question: services.questions.createQuestion(actor, { ...b, courseId: id(b.courseId, "courseId"), type: String(b.type ?? ""), titleZh: String(b.titleZh ?? ""), promptZh: String(b.promptZh ?? "") } as never) }, 201, { "x-request-id": requestId });
+      }
+      if (method === "POST" && p[0] === "questions" && p[2] === "copy" && p.length === 3) {
+        const b = await input(request);
+        return json({ question: services.questions.copyQuestion(actor, id(p[1], "questionId"), { targetCourseId: id(b.targetCourseId, "targetCourseId"), targetUnitId: b.targetUnitId ? id(b.targetUnitId, "targetUnitId") : undefined }) }, 201, { "x-request-id": requestId });
       }
       if (method === "POST" && p[0] === "rubrics" && p.length === 1) {
         const b = await input(request);
@@ -431,6 +436,10 @@ export function createBackendApp(options: BackendOptions = {}) {
       }
       if (method === "GET" && p[0] === "ai" && p[1] === "status" && p.length === 2) return json({ status: services.ai.status(actor) }, 200, { "x-request-id": requestId });
       if (method === "POST" && p[0] === "ai" && p[1] === "request" && p.length === 2) return json({ result: await services.ai.request(actor, (await input(request)) as never) }, 200, { "x-request-id": requestId });
+      if (method === "POST" && p[0] === "courses" && p[2] === "ai-authoring" && p[3] === "questions" && p.length === 4) {
+        const b = await input(request);
+        return json({ artifact: await services.aiReview.generateQuestion(actor, id(p[1], "courseId"), { ...b, requestKey: id(b.requestKey, "requestKey"), type: String(b.type ?? ""), topic: String(b.topic ?? "") } as never, services.ai) }, 201, { "x-request-id": requestId });
+      }
       if (method === "GET" && p[0] === "ai" && p[1] === "conversations" && p.length === 3) return json({ conversation: services.ai.listConversation(actor, id(p[2], "conversationId")) }, 200, { "x-request-id": requestId });
       if (method === "POST" && p[0] === "ai" && p[1] === "artifacts" && p.length === 2) return json({ artifact: services.aiReview.create(actor, (await input(request)) as never) }, 201, { "x-request-id": requestId });
       if (method === "GET" && p[0] === "ai" && p[1] === "artifacts" && p.length === 3) return json({ artifact: actor.role === "student" ? services.aiReview.getStudent(actor, id(p[2], "artifactId")) : services.aiReview.getStaff(actor, id(p[2], "artifactId")) }, 200, { "x-request-id": requestId });
@@ -439,6 +448,7 @@ export function createBackendApp(options: BackendOptions = {}) {
         const b = await input(request);
         return json({ artifact: services.aiReview.review(actor, id(p[2], "artifactId"), b.decision === "rejected" ? "rejected" : "approved", b.comment ? String(b.comment) : undefined) }, 200, { "x-request-id": requestId });
       }
+      if (method === "POST" && p[0] === "ai" && p[1] === "artifacts" && p[3] === "materialize-question" && p.length === 4) return json(await services.aiReview.materializeQuestion(actor, id(p[2], "artifactId")), 200, { "x-request-id": requestId });
       if (method === "POST" && p[0] === "ai" && p[1] === "artifacts" && p[3] === "publish" && p.length === 4) return json({ artifact: services.aiReview.publish(actor, id(p[2], "artifactId")) }, 200, { "x-request-id": requestId });
       if (method === "GET" && p[0] === "admin" && p[1] === "ai" && p[2] === "providers" && p.length === 3) return json({ providers: services.aiAdmin.listProviders(actor) }, 200, { "x-request-id": requestId });
       if (method === "POST" && p[0] === "admin" && p[1] === "ai" && p[2] === "providers" && p.length === 3) return json({ provider: services.aiAdmin.configureProvider(actor, (await input(request)) as never) }, 200, { "x-request-id": requestId });

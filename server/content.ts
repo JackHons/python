@@ -21,6 +21,41 @@ function jsonString(value: unknown, field: string, fallback: unknown = null) {
   const parsed = jsonValue(value, field, fallback);
   return parsed === null ? null : JSON.stringify(parsed);
 }
+export function normalizeQuestionConcepts(value: unknown, strict = true) {
+  if (value === undefined || value === null || value === "") return [] as string[];
+  let parsed = value;
+  if (typeof parsed === "string") {
+    try { parsed = JSON.parse(parsed); } catch { if (strict) throw new DomainError("invalid_json", "requiredConceptsJson must be valid JSON"); return []; }
+  }
+  if (!Array.isArray(parsed)) {
+    if (strict) throw new DomainError("invalid_input", "Question concepts must be an array");
+    return [];
+  }
+  if (parsed.length > 20) {
+    if (strict) throw new DomainError("invalid_input", "A question can have at most 20 concepts");
+    return [];
+  }
+  const concepts: string[] = [];
+  const seen = new Set<string>();
+  for (const item of parsed) {
+    if (typeof item !== "string") {
+      if (strict) throw new DomainError("invalid_input", "Question concepts must be strings");
+      continue;
+    }
+    const concept = item.trim();
+    if (!concept) {
+      if (strict) throw new DomainError("invalid_input", "Question concepts cannot be empty");
+      continue;
+    }
+    if (concept.length > 80) {
+      if (strict) throw new DomainError("invalid_input", "Question concepts must be 80 characters or fewer");
+      continue;
+    }
+    const key = concept.toLocaleLowerCase();
+    if (!seen.has(key)) { seen.add(key); concepts.push(concept); }
+  }
+  return concepts;
+}
 function requireRow<T>(row: T | undefined, message: string): T {
   if (!row) throw new DomainError("not_found", message, 404);
   return row;
@@ -93,6 +128,7 @@ function staffSubmissionAnswerProjection(answer: Record<string, any>) {
     aiSuggestedScore: answer.ai_suggested_score,
     teacherScore: answer.teacher_score,
     finalScore: answer.final_score,
+    final_score: answer.final_score,
     teacherFeedback: answer.teacher_feedback,
     reviewStatus: answer.review_status,
     reviewedById: answer.reviewed_by_id,
@@ -378,6 +414,7 @@ export class QuestionService {
   createQuestion(actor: Actor, input: { courseId: string; unitId?: string; rubricId?: string; type: string; titleZh: string; titleEn?: string; promptZh: string; promptEn?: string; optionsJson?: unknown; answerKeyJson?: unknown; explanationZh?: string; explanationEn?: string; starterCode?: string; solutionCode?: string; requiredConceptsJson?: unknown; maxScore?: number; sharingScope?: "private" | "course" | "school" }) {
     this.manage(actor, input.courseId);
     const options = this.validate(input);
+    const concepts = normalizeQuestionConcepts(input.requiredConceptsJson);
     if (input.unitId) {
       const unit = requireRow<{ course_id: string }>(this.db.get("SELECT course_id FROM units WHERE id = ?", [input.unitId]), "Unit not found");
       if (unit.course_id !== input.courseId) throw new DomainError("invalid_reference", "Question unit and course must match");
@@ -389,7 +426,7 @@ export class QuestionService {
     const owner = actor.role === "teacher" ? actor.id : this.db.get<{ owner_teacher_id: string }>("SELECT owner_teacher_id FROM courses WHERE id = ?", [input.courseId])?.owner_teacher_id;
     if (!owner) throw new DomainError("invalid_reference", "Course owner is missing");
     const id = randomUUID();
-    this.db.run("INSERT INTO questions (id, owner_teacher_id, course_id, unit_id, rubric_id, type, title_zh, title_en, prompt_zh, prompt_en, options_json, answer_key_json, explanation_zh, explanation_en, starter_code, solution_code, required_concepts_json, max_score, sharing_scope) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [id, owner, input.courseId, input.unitId ?? null, input.rubricId ?? null, input.type, txt(input.titleZh), txt(input.titleEn) || null, txt(input.promptZh), txt(input.promptEn) || null, options === null ? null : JSON.stringify(options), jsonString(input.answerKeyJson, "answerKeyJson"), txt(input.explanationZh) || null, txt(input.explanationEn) || null, input.starterCode ?? null, input.solutionCode ?? null, jsonString(input.requiredConceptsJson, "requiredConceptsJson"), input.maxScore ?? 1, input.sharingScope ?? "private"]);
+    this.db.run("INSERT INTO questions (id, owner_teacher_id, course_id, unit_id, rubric_id, type, title_zh, title_en, prompt_zh, prompt_en, options_json, answer_key_json, explanation_zh, explanation_en, starter_code, solution_code, required_concepts_json, max_score, sharing_scope) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [id, owner, input.courseId, input.unitId ?? null, input.rubricId ?? null, input.type, txt(input.titleZh), txt(input.titleEn) || null, txt(input.promptZh), txt(input.promptEn) || null, options === null ? null : JSON.stringify(options), jsonString(input.answerKeyJson, "answerKeyJson"), txt(input.explanationZh) || null, txt(input.explanationEn) || null, input.starterCode ?? null, input.solutionCode ?? null, concepts.length ? JSON.stringify(concepts) : null, input.maxScore ?? 1, input.sharingScope ?? "private"]);
     audit(this.db, actor.id, "question.created", "question", id, "success", { courseId: input.courseId, type: input.type });
     return this.question(id);
   }
@@ -397,8 +434,9 @@ export class QuestionService {
     const current = requireRow(this.question(id), "Question not found");
     this.manage(actor, current.course_id);
     this.validate({ type: current.type, titleZh: input.titleZh ?? current.title_zh, promptZh: input.promptZh ?? current.prompt_zh, optionsJson: input.optionsJson ?? current.options_json, starterCode: input.starterCode ?? current.starter_code, maxScore: input.maxScore ?? current.max_score });
+    const concepts = input.requiredConceptsJson === undefined ? normalizeQuestionConcepts(current.required_concepts_json, false) : normalizeQuestionConcepts(input.requiredConceptsJson);
     const status = input.status ?? current.status;
-    this.db.run("UPDATE questions SET title_zh = ?, title_en = ?, prompt_zh = ?, prompt_en = ?, options_json = ?, answer_key_json = ?, explanation_zh = ?, explanation_en = ?, starter_code = ?, solution_code = ?, required_concepts_json = ?, max_score = ?, sharing_scope = ?, status = ?, updated_at = ? WHERE id = ?", [txt(input.titleZh) || current.title_zh, txt(input.titleEn) || current.title_en, txt(input.promptZh) || current.prompt_zh, txt(input.promptEn) || current.prompt_en, input.optionsJson === undefined ? current.options_json : jsonString(input.optionsJson, "optionsJson"), input.answerKeyJson === undefined ? current.answer_key_json : jsonString(input.answerKeyJson, "answerKeyJson"), txt(input.explanationZh) || current.explanation_zh, txt(input.explanationEn) || current.explanation_en, input.starterCode ?? current.starter_code, input.solutionCode ?? current.solution_code, input.requiredConceptsJson === undefined ? current.required_concepts_json : jsonString(input.requiredConceptsJson, "requiredConceptsJson"), input.maxScore ?? current.max_score, input.sharingScope ?? current.sharing_scope, status, now(this.clock), id]);
+    this.db.run("UPDATE questions SET title_zh = ?, title_en = ?, prompt_zh = ?, prompt_en = ?, options_json = ?, answer_key_json = ?, explanation_zh = ?, explanation_en = ?, starter_code = ?, solution_code = ?, required_concepts_json = ?, max_score = ?, sharing_scope = ?, status = ?, updated_at = ? WHERE id = ?", [txt(input.titleZh) || current.title_zh, txt(input.titleEn) || current.title_en, txt(input.promptZh) || current.prompt_zh, txt(input.promptEn) || current.prompt_en, input.optionsJson === undefined ? current.options_json : jsonString(input.optionsJson, "optionsJson"), input.answerKeyJson === undefined ? current.answer_key_json : jsonString(input.answerKeyJson, "answerKeyJson"), txt(input.explanationZh) || current.explanation_zh, txt(input.explanationEn) || current.explanation_en, input.starterCode ?? current.starter_code, input.solutionCode ?? current.solution_code, concepts.length ? JSON.stringify(concepts) : null, input.maxScore ?? current.max_score, input.sharingScope ?? current.sharing_scope, status, now(this.clock), id]);
     audit(this.db, actor.id, "question.updated", "question", id, "success", { status });
     return this.question(id);
   }
@@ -530,6 +568,51 @@ export class QuestionService {
   listStaffQuestions(actor: Actor, courseId: string) {
     this.manage(actor, courseId);
     return this.db.all("SELECT id, course_id, unit_id, rubric_id, type, title_zh, title_en, prompt_zh, prompt_en, starter_code, required_concepts_json, max_score, sharing_scope, status, created_at, updated_at FROM questions WHERE course_id = ? AND status != 'archived' ORDER BY created_at DESC", [courseId]);
+  }
+  searchLibrary(actor: Actor, targetCourseId: string, filters: { q?: string; type?: string; concept?: string; limit?: number } = {}) {
+    this.manage(actor, targetCourseId);
+    const query = txt(filters.q);
+    const concept = txt(filters.concept);
+    if (query.length > 200 || concept.length > 80) throw new DomainError("invalid_input", "Question library filters are too long");
+    if (filters.type && !QUESTION_TYPES.has(filters.type)) throw new DomainError("invalid_input", "Question type is invalid");
+    const limit = Math.max(1, Math.min(100, Number.isSafeInteger(filters.limit) ? Number(filters.limit) : 50));
+    const rows = this.db.all<Record<string, any>>(`SELECT q.id, q.course_id AS source_course_id, c.title_zh AS source_course_title_zh, c.title_en AS source_course_title_en,
+      q.type, q.title_zh, q.title_en, q.prompt_zh, q.prompt_en, q.required_concepts_json, q.max_score, q.sharing_scope, q.status, q.updated_at
+      FROM questions q JOIN courses c ON c.id = q.course_id
+      WHERE c.status != 'archived' AND q.status != 'archived' AND
+        (q.course_id = ? OR (q.status = 'published' AND q.sharing_scope = 'school'))
+      ORDER BY q.updated_at DESC LIMIT ?`, [targetCourseId, limit * 3]);
+    return rows.filter((row) => {
+      if (filters.type && row.type !== filters.type) return false;
+      const searchable = `${row.title_zh ?? ""} ${row.title_en ?? ""} ${row.prompt_zh ?? ""} ${row.prompt_en ?? ""}`.toLocaleLowerCase();
+      if (query && !searchable.includes(query.toLocaleLowerCase())) return false;
+      if (concept && !normalizeQuestionConcepts(row.required_concepts_json, false).some((item) => item.toLocaleLowerCase() === concept.toLocaleLowerCase())) return false;
+      return true;
+    }).slice(0, limit).map((row) => ({
+      id: row.id, source_course_id: row.source_course_id, source_course_title_zh: row.source_course_title_zh, source_course_title_en: row.source_course_title_en,
+      type: row.type, title_zh: row.title_zh, title_en: row.title_en, prompt_zh: row.prompt_zh, prompt_en: row.prompt_en,
+      required_concepts_json: normalizeQuestionConcepts(row.required_concepts_json, false), max_score: row.max_score, sharing_scope: row.sharing_scope, status: row.status, updated_at: row.updated_at,
+    }));
+  }
+  copyQuestion(actor: Actor, sourceQuestionId: string, input: { targetCourseId: string; targetUnitId?: string }) {
+    this.manage(actor, input.targetCourseId);
+    const source = requireRow(this.question(sourceQuestionId), "Question not found");
+    const sameCourse = source.course_id === input.targetCourseId;
+    if (!sameCourse && (source.status !== "published" || source.sharing_scope !== "school")) throw new DomainError("not_found", "Question not found", 404);
+    if (input.targetUnitId) {
+      const unit = requireRow<{ course_id: string; status: string }>(this.db.get("SELECT course_id, status FROM units WHERE id = ?", [input.targetUnitId]), "Unit not found");
+      if (unit.course_id !== input.targetCourseId || unit.status === "archived") throw new DomainError("invalid_reference", "Question unit and course must match");
+    }
+    const owner = actor.role === "teacher" ? actor.id : this.db.get<{ owner_teacher_id: string }>("SELECT owner_teacher_id FROM courses WHERE id = ?", [input.targetCourseId])?.owner_teacher_id;
+    if (!owner) throw new DomainError("invalid_reference", "Course owner is missing");
+    const id = randomUUID();
+    const tests = this.db.all<Record<string, any>>("SELECT * FROM test_cases WHERE question_id = ? ORDER BY position, id", [sourceQuestionId]);
+    this.db.transaction(() => {
+      this.db.run("INSERT INTO questions (id, owner_teacher_id, course_id, unit_id, rubric_id, type, title_zh, title_en, prompt_zh, prompt_en, options_json, answer_key_json, explanation_zh, explanation_en, starter_code, solution_code, required_concepts_json, max_score, sharing_scope, status) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'private', 'draft')", [id, owner, input.targetCourseId, input.targetUnitId ?? null, source.type, source.title_zh, source.title_en, source.prompt_zh, source.prompt_en, source.options_json, source.answer_key_json, source.explanation_zh, source.explanation_en, source.starter_code, source.solution_code, JSON.stringify(normalizeQuestionConcepts(source.required_concepts_json, false)), source.max_score]);
+      for (const test of tests) this.db.run("INSERT INTO test_cases (id, question_id, visibility, label, input_json, expected_output, comparison_mode, tolerance, weight, position, time_limit_ms, memory_limit_mb) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [randomUUID(), id, test.visibility, test.label, test.input_json, test.expected_output, test.comparison_mode, test.tolerance, test.weight, test.position, test.time_limit_ms, test.memory_limit_mb]);
+    });
+    audit(this.db, actor.id, "question.copied", "question", id, "success", { sourceQuestionId, targetCourseId: input.targetCourseId });
+    return this.question(id);
   }
   getStaffQuestion(actor: Actor, questionId: string) {
     const question = requireRow(this.question(questionId), "Question not found");

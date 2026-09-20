@@ -3,10 +3,12 @@ import { createCipheriv, createDecipheriv, randomBytes, randomUUID } from "node:
 import type { Actor } from "./education.ts";
 import type { LocalDatabase } from "./db.ts";
 import { DomainError } from "./errors.ts";
+import { normalizeQuestionConcepts, QuestionService } from "./content.ts";
 
 const STAFF = new Set(["admin", "teacher"]);
 const PURPOSES = new Set(["student_hint", "translation", "question_generation", "grading", "summary", "feedback"]);
 const ARTIFACT_TYPES = new Set(["material", "translation", "question", "feedback", "suggested_score"]);
+const AUTHORING_TYPES = new Set(["multiple_choice", "fill_blank", "short_answer", "code_fill", "python_code", "file_upload", "project_upload"]);
 type Clock = () => Date;
 
 function iso(clock: Clock) { return clock().toISOString(); }
@@ -40,6 +42,28 @@ function canViewCourse(db: LocalDatabase, actor: Actor, courseId: string) {
   if (actor.role === "admin") return true;
   if (actor.role === "teacher") return canManageCourse(db, actor, courseId);
   return course.status === "published" && Boolean(db.get("SELECT 1 FROM course_enrollments WHERE course_id = ? AND student_id = ? AND status = 'active'", [courseId, actor.id]));
+}
+
+function parseAuthoringJson(content: string) {
+  const cleaned = content.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+  try {
+    const parsed = JSON.parse(cleaned);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("not an object");
+    return parsed as Record<string, any>;
+  } catch {
+    throw new DomainError("ai_question_invalid", "AI provider returned invalid question JSON", 502);
+  }
+}
+
+function boundedText(value: unknown, field: string, max: number, required = false) {
+  if (typeof value !== "string") {
+    if (required) throw new DomainError("ai_question_invalid", `AI question ${field} is required`, 502);
+    return null;
+  }
+  const result = value.trim();
+  if (required && !result) throw new DomainError("ai_question_invalid", `AI question ${field} is required`, 502);
+  if (result.length > max) throw new DomainError("ai_question_invalid", `AI question ${field} is too long`, 502);
+  return result || null;
 }
 
 export type ProviderMessage = { role: "system" | "user"; content: string };
@@ -401,6 +425,46 @@ export class AiService {
       throw domain;
     }
   }
+  async requestAuthoring(actor: Actor, input: { requestKey: string; courseId: string; type: string; topic: string; concepts: string[]; instructions?: string; maxScore?: number }) {
+    this.assertActive(actor);
+    requireStaff(actor);
+    if (!canManageCourse(this.db, actor, input.courseId)) throw new DomainError("not_found", "Course not found", 404);
+    if (!input.requestKey?.trim()) throw new DomainError("invalid_input", "AI request key is required");
+    if (!AUTHORING_TYPES.has(input.type)) throw new DomainError("invalid_input", "Question type is invalid");
+    const settings = this.quota.settings();
+    if (!settings.enabled || !settings.provider_config_id) throw new DomainError("ai_disabled", "AI assistant is disabled", 503);
+    const providerConfig = this.db.get<{ default_model: string }>("SELECT default_model FROM ai_provider_configs WHERE id = ? AND enabled = 1", [settings.provider_config_id]);
+    if (!providerConfig) throw new DomainError("provider_unavailable", "Configured AI provider is unavailable", 503);
+    const model = providerConfig.default_model;
+    const payload = { type: input.type, topic: input.topic.trim(), concepts: input.concepts, instructions: input.instructions?.trim() ?? "", maxScore: input.maxScore ?? 1 };
+    const messages: ProviderMessage[] = [
+      { role: "system", content: "You author one educational question for a Python learning platform. Return JSON only, with no markdown and no extra keys. Required fields: type,titleZh,promptZh,requiredConcepts,maxScore. Optional fields: titleEn,promptEn,optionsJson,answerKeyJson,explanationZh,explanationEn,starterCode,solutionCode,testCases. Test cases must contain visibility, inputJson, expectedOutput, comparisonMode, tolerance, weight, position, timeLimitMs, memoryLimitMb." },
+      { role: "user", content: JSON.stringify(payload) },
+    ];
+    const estimated = Math.max(1, Math.min(100000, Math.ceil(JSON.stringify(messages).length / 4) + 512));
+    const reservationKey = `question-authoring:${input.courseId}:${input.requestKey.trim()}`;
+    let reservation: Record<string, any>;
+    try {
+      reservation = this.quota.reserve(actor.id, reservationKey, estimated, settings.provider_config_id) as Record<string, any>;
+    } catch (error) {
+      const domain = error instanceof DomainError ? error : new DomainError("ai_quota_failed", "AI quota reservation failed", 500);
+      audit(this.db, actor.id, "ai.question_authoring_rejected", "ai_request", input.requestKey, "denied", { code: domain.code });
+      throw domain;
+    }
+    if (reservation.status !== "reserved") return { requestKey: input.requestKey, reservationId: reservation.id, status: reservation.status, content: null, replay: true };
+    const started = Date.now();
+    try {
+      const response = await this.provider.generate({ model, messages, temperature: 0.2 });
+      const settled = this.quota.settle(reservation.id, response.inputTokens, response.outputTokens, response.model ?? model, "question_generation", settings.provider_config_id, null, Date.now() - started, "success", null);
+      audit(this.db, actor.id, "ai.question_authoring_completed", "ai_request", input.requestKey, "success", { reservationId: reservation.id, inputTokens: response.inputTokens, outputTokens: response.outputTokens });
+      return { requestKey: input.requestKey, reservationId: (settled as Record<string, any>).id, status: "success", content: response.content, usage: { inputTokens: response.inputTokens, outputTokens: response.outputTokens } };
+    } catch (error) {
+      const domain = error instanceof DomainError ? error : new DomainError("provider_failed", "AI provider failed", 502);
+      this.quota.settle(reservation.id, 0, 0, model, "question_generation", settings.provider_config_id, null, Date.now() - started, "error", domain.code);
+      audit(this.db, actor.id, "ai.question_authoring_failed", "ai_request", input.requestKey, "failure", { reservationId: reservation.id, code: domain.code });
+      throw domain;
+    }
+  }
   status(actor: Actor) {
     this.assertActive(actor);
     if (actor.role === "student" && !this.db.get("SELECT 1 FROM course_enrollments ce JOIN courses c ON c.id = ce.course_id WHERE ce.student_id = ? AND ce.status = 'active' AND c.status = 'published'", [actor.id])) throw new DomainError("not_found", "No active student course is available", 404);
@@ -457,6 +521,70 @@ export class AiReviewService {
   private readonly clock: Clock;
   private readonly db: LocalDatabase;
   constructor(db: LocalDatabase, clock: Clock = () => new Date()) { this.db = db; this.clock = clock; }
+  private normalizeQuestionContent(raw: Record<string, any>, input: { type: string; concepts: string[]; maxScore?: number; unitId?: string }) {
+    const type = typeof raw.type === "string" ? raw.type : input.type;
+    if (type !== input.type || !AUTHORING_TYPES.has(type)) throw new DomainError("ai_question_invalid", "AI question type is invalid", 502);
+    const titleZh = boundedText(raw.titleZh, "titleZh", 500, true);
+    const promptZh = boundedText(raw.promptZh, "promptZh", 10000, true);
+    const titleEn = boundedText(raw.titleEn, "titleEn", 500);
+    const promptEn = boundedText(raw.promptEn, "promptEn", 10000);
+    const optionsJson = raw.optionsJson ?? null;
+    if (type === "multiple_choice" && (!Array.isArray(optionsJson) || optionsJson.length < 2 || optionsJson.length > 100)) throw new DomainError("ai_question_invalid", "AI multiple choice options are invalid", 502);
+    if ((type === "code_fill" || type === "python_code") && typeof raw.starterCode !== "string") throw new DomainError("ai_question_invalid", "AI code question starterCode is required", 502);
+    const maxScore = raw.maxScore === undefined ? input.maxScore ?? 1 : Number(raw.maxScore);
+    if (!Number.isFinite(maxScore) || maxScore < 0 || maxScore > 10000) throw new DomainError("ai_question_invalid", "AI question maxScore is invalid", 502);
+    const requiredConcepts = normalizeQuestionConcepts(raw.requiredConcepts ?? input.concepts);
+    const testCases = raw.testCases === undefined ? [] : raw.testCases;
+    if (!Array.isArray(testCases) || testCases.length > 100) throw new DomainError("ai_question_invalid", "AI question testCases are invalid", 502);
+    const normalizedTests = testCases.map((test: Record<string, any>, index: number) => {
+      if (!test || !["public", "hidden"].includes(test.visibility) || typeof test.expectedOutput !== "string" || !test.expectedOutput.trim()) throw new DomainError("ai_question_invalid", `AI test case ${index + 1} is invalid`, 502);
+      const comparisonMode = test.comparisonMode ?? "trimmed";
+      if (!["exact", "trimmed", "numeric_tolerance"].includes(comparisonMode)) throw new DomainError("ai_question_invalid", `AI test case ${index + 1} comparison mode is invalid`, 502);
+      const numeric = (value: unknown, fallback: number | null, label: string) => {
+        if (value === undefined || value === null) return fallback;
+        const result = Number(value);
+        if (!Number.isFinite(result) || result < 0) throw new DomainError("ai_question_invalid", `AI test case ${index + 1} ${label} is invalid`, 502);
+        return result;
+      };
+      return {
+        visibility: test.visibility, label: boundedText(test.label, "test label", 200), inputJson: test.inputJson ?? null,
+        expectedOutput: test.expectedOutput.trim(), comparisonMode, tolerance: numeric(test.tolerance, null, "tolerance"),
+        weight: numeric(test.weight, 1, "weight"), position: numeric(test.position, index, "position"),
+        timeLimitMs: numeric(test.timeLimitMs, null, "timeLimitMs"), memoryLimitMb: numeric(test.memoryLimitMb, null, "memoryLimitMb"),
+      };
+    });
+    return {
+      requestKey: "", type, titleZh, titleEn, promptZh, promptEn, optionsJson,
+      answerKeyJson: raw.answerKeyJson ?? null, explanationZh: boundedText(raw.explanationZh, "explanationZh", 10000), explanationEn: boundedText(raw.explanationEn, "explanationEn", 10000),
+      starterCode: boundedText(raw.starterCode, "starterCode", 20000), solutionCode: boundedText(raw.solutionCode, "solutionCode", 20000),
+      requiredConcepts, maxScore, unitId: input.unitId ?? null, testCases: normalizedTests,
+    };
+  }
+  async generateQuestion(actor: Actor, courseId: string, input: { requestKey: string; type: string; topic: string; concepts?: unknown; instructions?: string; maxScore?: number; unitId?: string }, ai: AiService) {
+    requireStaff(actor);
+    if (!canManageCourse(this.db, actor, courseId)) throw new DomainError("not_found", "Course not found", 404);
+    const requestKey = input.requestKey?.trim();
+    const topic = input.topic?.trim();
+    if (!requestKey || requestKey.length > 128 || !topic || topic.length > 200) throw new DomainError("invalid_input", "Question authoring requestKey and topic are required");
+    if (!AUTHORING_TYPES.has(input.type)) throw new DomainError("invalid_input", "Question type is invalid");
+    const concepts = normalizeQuestionConcepts(input.concepts);
+    const instructions = input.instructions?.trim() ?? "";
+    if (instructions.length > 4000) throw new DomainError("invalid_input", "Question authoring instructions are too long");
+    if (input.maxScore !== undefined && (!Number.isFinite(input.maxScore) || input.maxScore < 0 || input.maxScore > 10000)) throw new DomainError("invalid_input", "Question maxScore is invalid");
+    if (input.unitId) {
+      const unit = this.db.get<{ course_id: string; status: string }>("SELECT course_id, status FROM units WHERE id = ?", [input.unitId]);
+      if (!unit || unit.course_id !== courseId || unit.status === "archived") throw new DomainError("invalid_reference", "Question unit and course must match");
+    }
+    const existing = this.db.all<Record<string, any>>("SELECT id, content_json FROM ai_artifacts WHERE artifact_type = 'question' AND course_id = ? ORDER BY created_at DESC", [courseId]).find((row) => {
+      try { return parseJson(row.content_json, "contentJson")?.requestKey === requestKey; } catch { return false; }
+    });
+    if (existing) return this.getStaff(actor, existing.id);
+    const result = await ai.requestAuthoring(actor, { requestKey, courseId, type: input.type, topic, concepts, instructions, maxScore: input.maxScore });
+    if (!result.content) throw new DomainError("ai_request_replay", "AI request was already completed; retrieve the existing artifact", 409);
+    const content = this.normalizeQuestionContent(parseAuthoringJson(result.content), { type: input.type, concepts, maxScore: input.maxScore, unitId: input.unitId });
+    content.requestKey = requestKey;
+    return this.create(actor, { artifactType: "question", courseId, content });
+  }
   create(actor: Actor, input: { artifactType: string; courseId: string; content: unknown; studentId?: string; materialId?: string; questionId?: string; submissionAnswerId?: string }) {
     requireStaff(actor);
     if (!ARTIFACT_TYPES.has(input.artifactType) || !canManageCourse(this.db, actor, input.courseId)) throw new DomainError("forbidden", "AI artifact scope denied", 403);
@@ -480,6 +608,7 @@ export class AiReviewService {
     requireStaff(actor);
     const artifact = this.db.get<Record<string, any>>("SELECT * FROM ai_artifacts WHERE id = ?", [id]);
     if (!artifact || !canManageCourse(this.db, actor, artifact.course_id)) throw new DomainError("forbidden", "AI artifact scope denied", 403);
+    if (artifact.artifact_type === "question") throw new DomainError("authoring_materialization_required", "Question artifacts must be materialized after approval", 409);
     if (artifact.status !== "approved") throw new DomainError("invalid_review_transition", "Only approved artifacts can be published");
     const time = iso(this.clock);
     this.db.run("UPDATE ai_artifacts SET status = 'published', published_at = ?, updated_at = ? WHERE id = ?", [time, time, id]);
@@ -494,9 +623,40 @@ export class AiReviewService {
   }
   getStudent(actor: Actor, id: string) {
     if (actor.role !== "student") throw new DomainError("forbidden", "Student permission required", 403);
-    const row = this.db.get<Record<string, any>>("SELECT id, artifact_type, course_id, student_id, content_json, status, published_at FROM ai_artifacts WHERE id = ? AND status = 'published'", [id]);
+    const row = this.db.get<Record<string, any>>("SELECT id, artifact_type, course_id, student_id, content_json, status, published_at FROM ai_artifacts WHERE id = ? AND status = 'published' AND artifact_type IN ('material', 'translation', 'feedback')", [id]);
     if (!row || !canViewCourse(this.db, actor, row.course_id) || (row.student_id && row.student_id !== actor.id)) throw new DomainError("not_found", "AI artifact not found", 404);
     return { id: row.id, artifactType: row.artifact_type, courseId: row.course_id, content: parseJson(row.content_json, "contentJson"), publishedAt: row.published_at };
+  }
+  materializeQuestion(actor: Actor, id: string) {
+    requireStaff(actor);
+    const artifact = this.db.get<Record<string, any>>("SELECT * FROM ai_artifacts WHERE id = ? AND artifact_type = 'question'", [id]);
+    if (!artifact || !canManageCourse(this.db, actor, artifact.course_id)) throw new DomainError("not_found", "AI artifact not found", 404);
+    const questions = new QuestionService(this.db, this.clock);
+    if (artifact.question_id) return { artifact: this.getStaff(actor, id), question: questions.getStaffQuestion(actor, artifact.question_id) };
+    if (artifact.status !== "approved") throw new DomainError("invalid_review_transition", "Only approved question artifacts can be materialized", 409);
+    const content = parseJson(artifact.content_json, "contentJson") as Record<string, any>;
+    if (content.unitId) {
+      const unit = this.db.get<{ course_id: string; status: string }>("SELECT course_id, status FROM units WHERE id = ?", [content.unitId]);
+      if (!unit || unit.course_id !== artifact.course_id || unit.status === "archived") throw new DomainError("invalid_reference", "Question unit and course must match");
+    }
+    let question: Record<string, any> | null = null;
+    this.db.transaction(() => {
+      const current = this.db.get<{ question_id: string | null }>("SELECT question_id FROM ai_artifacts WHERE id = ?", [id]);
+      if (current?.question_id) { question = questions.getStaffQuestion(actor, current.question_id); return; }
+      const created = questions.createQuestion(actor, {
+        courseId: artifact.course_id, unitId: content.unitId ?? undefined, type: content.type, titleZh: content.titleZh, titleEn: content.titleEn ?? undefined,
+        promptZh: content.promptZh, promptEn: content.promptEn ?? undefined, optionsJson: content.optionsJson, answerKeyJson: content.answerKeyJson,
+        explanationZh: content.explanationZh ?? undefined, explanationEn: content.explanationEn ?? undefined, starterCode: content.starterCode ?? undefined,
+        solutionCode: content.solutionCode ?? undefined, requiredConceptsJson: content.requiredConcepts, maxScore: content.maxScore,
+      });
+      if (!created) throw new DomainError("internal_error", "Materialized question was not created", 500);
+      question = created;
+      for (const test of content.testCases ?? []) questions.addTestCase(actor, (question as Record<string, any>).id, test);
+      const time = iso(this.clock);
+      this.db.run("UPDATE ai_artifacts SET question_id = ?, status = 'published', published_at = ?, updated_at = ? WHERE id = ? AND question_id IS NULL", [(question as Record<string, any>).id, time, time, id]);
+      audit(this.db, actor.id, "ai.question_materialized", "ai_artifact", id, "success", { questionId: (question as Record<string, any>).id });
+    });
+    return { artifact: this.getStaff(actor, id), question };
   }
   listStaff(actor: Actor, courseId: string) {
     requireStaff(actor);
