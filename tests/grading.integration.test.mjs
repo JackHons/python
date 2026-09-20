@@ -32,6 +32,7 @@ test("automatic grading reads only immutable snapshot test cases and updates the
     const grade = fixture.db.get("SELECT auto_score, final_score, max_score, status FROM grades WHERE submission_id = ?", [submission.id]);
     assert.equal(grade.auto_score, 12);
     assert.equal(grade.final_score, 12);
+    assert.equal(grade.max_score, 12);
     assert.equal(grade.status, "review_required");
     const before = fixture.db.get("SELECT question_snapshot_json FROM submission_answers WHERE id = ?", [submission.answers[0].id]).question_snapshot_json;
     questions.updateQuestion(fixture.teacher, question.id, { titleZh: "題目後來改名", solutionCode: "print('other')" });

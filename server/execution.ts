@@ -298,9 +298,13 @@ export class ExecutionService {
       }
       this.db.run("UPDATE code_runs SET status = ?, finished_at = ? WHERE id = ?", [runStatus, new Date().toISOString(), run.id]);
       this.db.run("UPDATE submission_answers SET auto_score = ?, final_score = ?, updated_at = ? WHERE id = ?", [score, score, new Date().toISOString(), answerId]);
+      const totals = this.db.get<{ auto_score: number | null; final_score: number | null; max_score: number | null }>(`SELECT COALESCE(SUM(auto_score), 0) AS auto_score,
+        COALESCE(SUM(final_score), 0) AS final_score,
+        COALESCE(SUM(json_extract(question_snapshot_json, '$.maxScore')), 0) AS max_score
+        FROM submission_answers WHERE submission_id = ?`, [answer.submission_id]);
       const grade = this.db.get<{ id: string }>("SELECT id FROM grades WHERE submission_id = ?", [answer.submission_id]);
-      if (grade) this.db.run("UPDATE grades SET auto_score = ?, final_score = ?, status = 'review_required', updated_at = ? WHERE id = ?", [score, score, new Date().toISOString(), grade.id]);
-      else this.db.run("INSERT INTO grades (id, submission_id, auto_score, final_score, max_score, status) VALUES (?, ?, ?, ?, ?, 'review_required')", [randomUUID(), answer.submission_id, score, score, snapshot.maxScore]);
+      if (grade) this.db.run("UPDATE grades SET auto_score = ?, final_score = ?, max_score = ?, status = 'review_required', updated_at = ? WHERE id = ?", [totals?.auto_score ?? 0, totals?.final_score ?? 0, totals?.max_score ?? 0, new Date().toISOString(), grade.id]);
+      else this.db.run("INSERT INTO grades (id, submission_id, auto_score, final_score, max_score, status) VALUES (?, ?, ?, ?, ?, 'review_required')", [randomUUID(), answer.submission_id, totals?.auto_score ?? 0, totals?.final_score ?? 0, totals?.max_score ?? snapshot.maxScore]);
     });
     if (busyError) throw busyError;
     return this.getRun(actor, run.id);

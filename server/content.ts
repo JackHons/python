@@ -81,6 +81,26 @@ export function safeStudentQuestionProjection(row: Record<string, unknown>, incl
   };
 }
 
+function staffSubmissionAnswerProjection(answer: Record<string, any>) {
+  return {
+    id: answer.id,
+    questionId: answer.question_id,
+    position: answer.position,
+    answerText: answer.answer_text,
+    answerJson: jsonValue(answer.answer_json, "answerJson"),
+    fileAssetId: answer.file_asset_id,
+    autoScore: answer.auto_score,
+    aiSuggestedScore: answer.ai_suggested_score,
+    teacherScore: answer.teacher_score,
+    finalScore: answer.final_score,
+    teacherFeedback: answer.teacher_feedback,
+    reviewStatus: answer.review_status,
+    reviewedById: answer.reviewed_by_id,
+    reviewedAt: answer.reviewed_at,
+    question: safeStudentQuestionProjection(answer, true),
+  };
+}
+
 export class MaterialService {
   private readonly clock: Clock;
   private readonly db: LocalDatabase;
@@ -715,11 +735,31 @@ export class AssignmentService {
     return this.db.all<Record<string, any>>("SELECT ai.assignment_id, ai.question_id, ai.course_id, ai.position, ai.score_override FROM assignment_items ai WHERE ai.assignment_id = ? ORDER BY ai.position, ai.question_id", [assignmentId]);
   }
 
+  private refreshGrade(submissionId: string, reviewerId?: string) {
+    const totals = this.db.get<{ answer_count: number; confirmed_count: number; auto_score: number | null; final_score: number | null; max_score: number | null }>(`SELECT COUNT(*) AS answer_count,
+      SUM(CASE WHEN review_status = 'confirmed' THEN 1 ELSE 0 END) AS confirmed_count,
+      COALESCE(SUM(auto_score), 0) AS auto_score,
+      COALESCE(SUM(final_score), 0) AS final_score,
+      COALESCE(SUM(json_extract(question_snapshot_json, '$.maxScore')), 0) AS max_score
+      FROM submission_answers WHERE submission_id = ?`, [submissionId]) ?? { answer_count: 0, confirmed_count: 0, auto_score: 0, final_score: 0, max_score: 0 };
+    const complete = totals.answer_count > 0 && Number(totals.confirmed_count ?? 0) === Number(totals.answer_count);
+    const status = complete ? "confirmed" : "review_required";
+    const time = now(this.clock);
+    const grade = this.db.get<{ id: string }>("SELECT id FROM grades WHERE submission_id = ?", [submissionId]);
+    if (grade) {
+      this.db.run("UPDATE grades SET auto_score = ?, teacher_adjusted_score = ?, final_score = ?, max_score = ?, status = ?, graded_by_id = COALESCE(?, graded_by_id), graded_at = COALESCE(?, graded_at), updated_at = ? WHERE id = ?", [totals.auto_score ?? 0, complete ? totals.final_score ?? 0 : null, totals.final_score ?? 0, totals.max_score ?? 0, status, reviewerId ?? null, reviewerId ? time : null, time, grade.id]);
+    } else {
+      this.db.run("INSERT INTO grades (id, submission_id, auto_score, teacher_adjusted_score, final_score, max_score, status, graded_by_id, graded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", [randomUUID(), submissionId, totals.auto_score ?? 0, complete ? totals.final_score ?? 0 : null, totals.final_score ?? 0, totals.max_score ?? 0, status, reviewerId ?? null, reviewerId ? time : null]);
+    }
+    this.db.run("UPDATE submissions SET status = ?, last_activity_at = ? WHERE id = ?", [complete ? "graded" : "grading", time, submissionId]);
+    return { complete, ...totals, status };
+  }
+
   private submissionView(actor: Actor, submissionId: string) {
-    const submission = requireRow<Record<string, any>>(this.db.get("SELECT s.*, a.course_id, a.show_score_immediately, a.show_test_results_immediately, a.answer_release_at, g.auto_score AS grade_auto_score, g.teacher_adjusted_score, g.final_score AS grade_final_score, g.max_score AS grade_max_score, g.status AS grade_status, g.released_at AS grade_released_at FROM submissions s JOIN assignments a ON a.id = s.assignment_id LEFT JOIN grades g ON g.submission_id = s.id WHERE s.id = ?", [submissionId]), "Submission not found");
+    const submission = requireRow<Record<string, any>>(this.db.get("SELECT s.*, a.course_id, a.show_score_immediately, a.show_test_results_immediately, a.answer_release_at, u.chinese_name AS student_chinese_name, u.english_name AS student_english_name, u.student_number AS student_number, g.auto_score AS grade_auto_score, g.teacher_adjusted_score, g.final_score AS grade_final_score, g.max_score AS grade_max_score, g.status AS grade_status, g.released_at AS grade_released_at FROM submissions s JOIN assignments a ON a.id = s.assignment_id JOIN users u ON u.id = s.student_id LEFT JOIN grades g ON g.submission_id = s.id WHERE s.id = ?", [submissionId]), "Submission not found");
     if (actor.role === "student" && submission.student_id !== actor.id) throw new DomainError("forbidden", "You cannot view this submission", 403);
     if (actor.role === "student") this.studentAssignment(actor, submission.assignment_id);
-    if (STAFF.has(actor.role) && !canManageCourse(this.db, actor, submission.course_id)) throw new DomainError("forbidden", "You cannot view this submission", 403);
+    if (STAFF.has(actor.role) && !canManageCourse(this.db, actor, submission.course_id)) throw new DomainError("not_found", "Submission not found", 404);
     const answers = this.db.all<Record<string, any>>("SELECT * FROM submission_answers WHERE submission_id = ? ORDER BY position, question_id", [submissionId]);
     const student = actor.role === "student";
     const answersReleased = Boolean(submission.answer_release_at && (parseTime(submission.answer_release_at)?.getTime() ?? Number.POSITIVE_INFINITY) <= this.clock().getTime());
@@ -734,13 +774,14 @@ export class AssignmentService {
       totalScore: scoreReleased ? submission.grade_final_score ?? answers.reduce((sum, answer) => sum + Number(answer.final_score ?? 0), 0) : null,
       maxScore: submission.grade_max_score ?? answers.reduce((sum, answer) => sum + Number(JSON.parse(answer.question_snapshot_json).maxScore ?? 0), 0),
       gradeStatus: submission.grade_status ?? "not_created",
+      student: { id: submission.student_id, chineseName: submission.student_chinese_name, englishName: submission.student_english_name, studentNumber: submission.student_number },
       answers: answers.map((answer) => student ? {
         id: answer.id, questionId: answer.question_id, position: answer.position,
         answerText: answer.answer_text, answerJson: answer.answer_json, fileAssetId: answer.file_asset_id,
         autoScore: scoreReleased ? answer.auto_score : null, finalScore: scoreReleased ? answer.final_score : null,
         teacherFeedback: gradeReleased ? answer.teacher_feedback : null,
         question: safeStudentQuestionProjection(answer, answersReleased),
-      } : answer),
+      } : staffSubmissionAnswerProjection(answer)),
     };
   }
 
@@ -815,7 +856,10 @@ export class AssignmentService {
     this.db.transaction(() => {
       this.db.run("UPDATE submissions SET status = 'submitted', submitted_at = ?, is_late = ?, last_activity_at = ? WHERE id = ?", [submittedAt, isLate ? 1 : 0, submittedAt, submissionId]);
       const maxScore = this.db.get<{ total: number }>("SELECT COALESCE(SUM(json_extract(question_snapshot_json, '$.maxScore')), 0) AS total FROM submission_answers WHERE submission_id = ?", [submissionId])?.total ?? 0;
-      this.db.run("INSERT INTO grades (id, submission_id, max_score, status) VALUES (?, ?, ?, 'pending') ON CONFLICT(submission_id) DO NOTHING", [randomUUID(), submissionId, maxScore]);
+      this.db.run("UPDATE submission_answers SET review_status = CASE WHEN review_status = 'confirmed' THEN review_status ELSE 'pending' END, updated_at = ? WHERE submission_id = ?", [submittedAt, submissionId]);
+      const existing = this.db.get<{ id: string }>("SELECT id FROM grades WHERE submission_id = ?", [submissionId]);
+      if (existing) this.db.run("UPDATE grades SET max_score = ?, status = CASE WHEN status = 'released' THEN status ELSE 'review_required' END, updated_at = ? WHERE id = ?", [maxScore, submittedAt, existing.id]);
+      else this.db.run("INSERT INTO grades (id, submission_id, max_score, status) VALUES (?, ?, ?, 'review_required')", [randomUUID(), submissionId, maxScore]);
     });
     audit(this.db, actor.id, "submission.submitted", "submission", submissionId, "success", { isLate });
     return this.submissionView(actor, submissionId);
@@ -824,15 +868,17 @@ export class AssignmentService {
   grade(actor: Actor, submissionId: string, input: { questionId: string; score: number; feedback?: string }) {
     const submission = requireRow<Record<string, any>>(this.db.get("SELECT s.*, a.course_id FROM submissions s JOIN assignments a ON a.id = s.assignment_id WHERE s.id = ?", [submissionId]), "Submission not found");
     this.manage(actor, submission.course_id);
-    if (!Number.isFinite(input.score) || input.score < 0) throw new DomainError("invalid_input", "Score must be nonnegative");
+    if (submission.status === "draft") throw new DomainError("submission_not_submitted", "Draft submissions cannot be graded", 409);
+    if (["returned"].includes(submission.status)) throw new DomainError("grade_locked", "Released submissions cannot be graded", 409);
+    const currentGrade = this.db.get<{ status: string }>("SELECT status FROM grades WHERE submission_id = ?", [submissionId]);
+    if (currentGrade?.status === "released") throw new DomainError("grade_locked", "Released submissions cannot be graded", 409);
+    if (!Number.isFinite(input.score) || input.score < 0) throw new DomainError("invalid_input", "Score must be a finite nonnegative number");
     const answer = requireRow<Record<string, any>>(this.db.get("SELECT * FROM submission_answers WHERE submission_id = ? AND question_id = ?", [submissionId, input.questionId]), "Question is not in this submission");
     const snapshot = JSON.parse(answer.question_snapshot_json) as Record<string, any>;
     if (input.score > Number(snapshot.maxScore)) throw new DomainError("invalid_input", "Score exceeds question maximum");
     this.db.transaction(() => {
       this.db.run("UPDATE submission_answers SET teacher_score = ?, final_score = ?, teacher_feedback = ?, review_status = 'confirmed', reviewed_by_id = ?, reviewed_at = ?, updated_at = ? WHERE id = ?", [input.score, input.score, input.feedback ?? null, actor.id, now(this.clock), now(this.clock), answer.id]);
-      const total = this.db.get<{ total: number }>("SELECT COALESCE(SUM(final_score), 0) AS total FROM submission_answers WHERE submission_id = ?", [submissionId])?.total ?? 0;
-      this.db.run("UPDATE grades SET teacher_adjusted_score = ?, final_score = ?, status = 'confirmed', graded_by_id = ?, graded_at = ? WHERE submission_id = ?", [total, total, actor.id, now(this.clock), submissionId]);
-      this.db.run("UPDATE submissions SET status = 'graded', last_activity_at = ? WHERE id = ?", [now(this.clock), submissionId]);
+      this.refreshGrade(submissionId, actor.id);
     });
     return this.submissionView(actor, submissionId);
   }
@@ -841,8 +887,17 @@ export class AssignmentService {
     const submission = requireRow<Record<string, any>>(this.db.get("SELECT s.*, a.course_id FROM submissions s JOIN assignments a ON a.id = s.assignment_id WHERE s.id = ?", [submissionId]), "Submission not found");
     this.manage(actor, submission.course_id);
     const grade = requireRow<{ status: string }>(this.db.get("SELECT status FROM grades WHERE submission_id = ?", [submissionId]), "Grade not found");
-    if (!["confirmed", "review_required", "released"].includes(grade.status)) throw new DomainError("grade_not_ready", "Grade must be confirmed before release", 409);
-    this.db.run("UPDATE grades SET status = 'released', released_at = ?, updated_at = ? WHERE submission_id = ?", [now(this.clock), now(this.clock), submissionId]);
+    if (grade.status === "released") {
+      this.db.run("UPDATE submissions SET status = 'returned', last_activity_at = ? WHERE id = ?", [now(this.clock), submissionId]);
+      return this.db.get("SELECT * FROM grades WHERE submission_id = ?", [submissionId]);
+    }
+    const pending = this.db.get<{ count: number }>("SELECT COUNT(*) AS count FROM submission_answers WHERE submission_id = ? AND review_status != 'confirmed'", [submissionId])?.count ?? 0;
+    if (pending > 0 || grade.status !== "confirmed") throw new DomainError("grade_not_ready", "All answers must be confirmed before release", 409);
+    this.db.transaction(() => {
+      const time = now(this.clock);
+      this.db.run("UPDATE grades SET status = 'released', released_at = COALESCE(released_at, ?), updated_at = ? WHERE submission_id = ?", [time, time, submissionId]);
+      this.db.run("UPDATE submissions SET status = 'returned', last_activity_at = ? WHERE id = ?", [time, submissionId]);
+    });
     return this.db.get("SELECT * FROM grades WHERE submission_id = ?", [submissionId]);
   }
 
@@ -850,6 +905,7 @@ export class AssignmentService {
   listSubmissions(actor: Actor, assignmentId: string) {
     const assignment = requireRow(this.assignment(assignmentId), "Assignment not found");
     this.manage(actor, assignment.course_id);
-    return this.db.all("SELECT s.id, s.assignment_id, s.student_id, s.attempt_number, s.status, s.is_late, s.submitted_at, s.last_activity_at, g.final_score, g.max_score, g.status AS grade_status FROM submissions s LEFT JOIN grades g ON g.submission_id = s.id WHERE s.assignment_id = ? ORDER BY s.submitted_at DESC, s.created_at DESC", [assignmentId]);
+    const rows = this.db.all<Record<string, any>>("SELECT s.id, s.assignment_id, s.student_id, s.attempt_number, s.status, s.is_late, s.submitted_at, s.last_activity_at, u.chinese_name AS student_chinese_name, u.english_name AS student_english_name, u.student_number, g.final_score, g.max_score, g.status AS grade_status FROM submissions s JOIN users u ON u.id = s.student_id LEFT JOIN grades g ON g.submission_id = s.id WHERE s.assignment_id = ? ORDER BY s.submitted_at DESC, s.created_at DESC", [assignmentId]);
+    return rows.map((row) => ({ ...row, student: { id: row.student_id, chineseName: row.student_chinese_name, englishName: row.student_english_name, studentNumber: row.student_number } }));
   }
 }

@@ -1428,7 +1428,8 @@ function TeacherGradingDesk({ L, courses, showToast, initialAssignmentId }: { L:
   const [assignments, setAssignments] = useState<AssignmentDto[]>([]);
   const [assignmentId, setAssignmentId] = useState("");
   const [submissions, setSubmissions] = useState<SubmissionListDto[]>([]);
-  const [submission, setSubmission] = useState<(SubmissionDto & { answers: Array<SubmissionDto["answers"][number] & { question_id?: string; question_snapshot_json?: string; teacher_feedback?: string | null }> }) | null>(null);
+  const [submission, setSubmission] = useState<SubmissionDto | null>(null);
+  const [selectedAnswerIndex, setSelectedAnswerIndex] = useState(0);
   const [score, setScore] = useState("");
   const [feedback, setFeedback] = useState("");
   const [error, setError] = useState("");
@@ -1454,15 +1455,51 @@ function TeacherGradingDesk({ L, courses, showToast, initialAssignmentId }: { L:
   }, [courseId]);
   useEffect(() => () => { deepLinkGate.current.cancel(); assignmentListGate.current.cancel(); submissionListGate.current.cancel(); submissionGate.current.cancel(); }, []);
   async function loadSubmissions(id: string) {
-    setAssignmentId(id); setSubmission(null); submissionGate.current.cancel();
+    setAssignmentId(id); setSubmission(null); setSelectedAnswerIndex(0); submissionGate.current.cancel();
     await submissionListGate.current.run((signal) => learningApi.assignmentSubmissions(id, signal), (result) => { setSubmissions(result.submissions); setError(""); }, (caught) => setError(caught instanceof Error ? caught.message : L("提交載入失敗", "Submissions could not be loaded")));
   }
   async function chooseSubmission(id: string) {
-    await submissionGate.current.run((signal) => learningApi.getSubmission(id, signal), (result) => { setSubmission(result.submission as typeof submission); setError(""); }, (caught) => setError(caught instanceof Error ? caught.message : L("提交內容載入失敗", "Submission could not be loaded")));
+    setSelectedAnswerIndex(0);
+    await submissionGate.current.run((signal) => learningApi.getSubmission(id, signal), (result) => { setSubmission(result.submission); setError(""); }, (caught) => setError(caught instanceof Error ? caught.message : L("提交內容載入失敗", "Submission could not be loaded")));
   }
-  const firstAnswer = submission?.answers[0];
-  const questionId = firstAnswer?.questionId ?? firstAnswer?.question_id ?? "";
-  return <section className="settings-card grading-desk"><div className="page-heading"><div><span className="grade-tag">{L("批改與發布", "GRADE & RELEASE")}</span><h2>{L("學生提交", "Student submissions")}</h2></div></div>{error && <p role="alert" className="form-error">{error}</p>}<div className="editor-controls"><label>{L("課程", "Course")}<select value={courseId} onChange={(event) => { deepLinkGate.current.cancel(); submissionListGate.current.cancel(); submissionGate.current.cancel(); setAssignmentId(""); setSubmissions([]); setSubmission(null); setCourseId(event.target.value); }}>{courses.map((item) => <option key={item.id} value={item.id}>{item.title_zh}</option>)}</select></label><label>{L("功課", "Assignment")}<select value={assignmentId} onChange={(event) => void loadSubmissions(event.target.value)}><option value="">—</option>{assignments.map((item) => <option key={item.id} value={item.id}>{item.title_zh}</option>)}</select></label><label>{L("提交", "Submission")}<select value={submission?.id ?? ""} onChange={(event) => void chooseSubmission(event.target.value)}><option value="">—</option>{submissions.map((item) => <option key={item.id} value={item.id}>{item.student_id} · #{item.attempt_number} · {item.status}</option>)}</select></label></div>{submission && <div className="editor-form"><p>{L("作答題數", "Answers")}: {submission.answers.length} · {L("狀態", "Status")}: {submission.status}</p><label>{L("第一題分數", "First answer score")}<input type="number" min="0" value={score} onChange={(event) => setScore(event.target.value)} /></label><label>{L("教師評語", "Teacher feedback")}<textarea value={feedback} onChange={(event) => setFeedback(event.target.value)} /></label><button type="button" disabled={!questionId || !score} onClick={() => void learningApi.gradeSubmission(submission.id, questionId, Number(score), feedback).then((result) => { setSubmission(result.submission as typeof submission); showToast(L("評分已保存", "Grade saved")); }).catch((caught: unknown) => setError(caught instanceof Error ? caught.message : L("評分失敗", "Grading failed")))}>{L("保存手動評分", "Save manual grade")}</button><button type="button" onClick={() => void learningApi.releaseGrade(submission.id).then(() => { showToast(L("成績已發布", "Grade released")); return chooseSubmission(submission.id); }).catch((caught: unknown) => setError(caught instanceof Error ? caught.message : L("發布失敗", "Release failed")))}>{L("向學生發布成績", "Release grade")}</button></div>}</section>;
+  const selectedAnswer = submission?.answers[selectedAnswerIndex] ?? submission?.answers[0];
+  const questionId = selectedAnswer?.questionId ?? "";
+  const releaseReady = Boolean(submission?.answers.length && submission.answers.every((answer) => answer.reviewStatus === "confirmed"));
+  const closed = submission?.status === "returned" || submission?.gradeStatus === "released";
+  useEffect(() => {
+    const nextScore = selectedAnswer?.teacherScore ?? selectedAnswer?.autoScore;
+    setScore(nextScore === null || nextScore === undefined ? "" : String(nextScore));
+    setFeedback(selectedAnswer?.teacherFeedback ?? "");
+  }, [selectedAnswer?.id, selectedAnswer?.teacherScore, selectedAnswer?.autoScore, selectedAnswer?.teacherFeedback]);
+  async function saveGrade(moveNext = false) {
+    if (!submission || !selectedAnswer || !score || !Number.isFinite(Number(score))) return;
+    try {
+      const result = await learningApi.gradeSubmission(submission.id, questionId, Number(score), feedback);
+      setSubmission(result.submission);
+      if (moveNext) setSelectedAnswerIndex((current) => Math.min(current + 1, result.submission.answers.length - 1));
+      showToast(L("此題評分已保存", "Question grade saved"));
+    } catch (caught) { setError(caught instanceof Error ? caught.message : L("評分失敗", "Grading failed")); }
+  }
+  async function release() {
+    if (!submission) return;
+    try { await learningApi.releaseGrade(submission.id); showToast(L("成績已發布", "Grade released")); await chooseSubmission(submission.id); } catch (caught) { setError(caught instanceof Error ? caught.message : L("發布失敗", "Release failed")); }
+  }
+  return <section className="settings-card grading-desk">
+    <div className="page-heading"><div><span className="grade-tag">{L("批改與發布", "GRADE & RELEASE")}</span><h2>{L("逐題批改工作台", "Question-by-question grading desk")}</h2><p>{L("每題獨立保存；只有全部題目確認後才能發布。", "Save each question independently; release is available only after every answer is confirmed.")}</p></div></div>
+    {error && <p role="alert" className="form-error">{error}</p>}
+    <div className="editor-controls">
+      <label>{L("課程", "Course")}<select value={courseId} onChange={(event) => { deepLinkGate.current.cancel(); submissionListGate.current.cancel(); submissionGate.current.cancel(); setAssignmentId(""); setSubmissions([]); setSubmission(null); setCourseId(event.target.value); }}>{courses.map((item) => <option key={item.id} value={item.id}>{languageText(item.title_zh, item.title_en, L)}</option>)}</select></label>
+      <label>{L("功課", "Assignment")}<select value={assignmentId} onChange={(event) => void loadSubmissions(event.target.value)}><option value="">—</option>{assignments.map((item) => <option key={item.id} value={item.id}>{languageText(item.title_zh, item.title_en, L)}</option>)}</select></label>
+      <label>{L("提交", "Submission")}<select value={submission?.id ?? ""} onChange={(event) => void chooseSubmission(event.target.value)}><option value="">—</option>{submissions.map((item) => <option key={item.id} value={item.id}>{item.student?.chineseName ?? item.student_id} · {item.student?.studentNumber ?? "—"} · #{item.attempt_number} · {item.status}</option>)}</select></label>
+    </div>
+    {submission && <>
+      <div className="editor-form"><p><strong>{submission.student?.chineseName ?? submission.student_id}</strong>{submission.student?.studentNumber ? ` · ${submission.student.studentNumber}` : ""} · {L("作答題數", "Answers")}: {submission.answers.length} · {L("已批改", "Reviewed")}: {submission.answers.filter((answer) => answer.reviewStatus === "confirmed").length}/{submission.answers.length} · {L("狀態", "Status")}: {submission.status}</p><p>{L("成績狀態", "Grade status")}: {submission.gradeStatus ?? "not_created"} · {L("總分", "Total")}: {submission.totalScore ?? "—"}/{submission.maxScore ?? "—"}</p></div>
+      <div className="grading-workspace">
+        <nav aria-label={L("題目導覽", "Question navigator")} className="grading-question-nav"><h3>{L("題目", "Questions")}</h3>{submission.answers.map((answer, index) => <button type="button" key={answer.id} className={index === selectedAnswerIndex ? "active" : ""} onClick={() => setSelectedAnswerIndex(index)}>{index + 1}. {answer.reviewStatus === "confirmed" ? "✓" : "○"} {answer.question?.titleZh ?? answer.questionId}</button>)}</nav>
+        {selectedAnswer && <article className="grading-question-editor"><p className="grade-tag">{L("第", "Question ")}{selectedAnswerIndex + 1}/{submission.answers.length}</p><h3>{selectedAnswer.question?.titleZh ?? selectedAnswer.questionId}</h3><p>{selectedAnswer.question?.promptZh}</p><div className="student-answer"><h4>{L("學生答案", "Student answer")}</h4><pre>{selectedAnswer.answerText ?? (selectedAnswer.answerJson ? JSON.stringify(selectedAnswer.answerJson, null, 2) : L("未提供答案", "No answer provided"))}</pre>{selectedAnswer.fileAssetId && <a href={learningApi.fileDownloadUrl(selectedAnswer.fileAssetId)}>{L("下載附件", "Download attachment")}</a>}</div><p>{L("滿分", "Maximum")}: {selectedAnswer.question?.maxScore ?? "—"} · {L("自動評分（僅供參考）", "Auto score (reference only)")}: {selectedAnswer.autoScore ?? "—"}</p><label>{L("教師分數", "Teacher score")}<input type="number" min="0" max={selectedAnswer.question?.maxScore} step="any" value={score} disabled={closed} onChange={(event) => setScore(event.target.value)} /></label><label>{L("教師評語", "Teacher feedback")}<textarea value={feedback} disabled={closed} onChange={(event) => setFeedback(event.target.value)} /></label><p>{L("審核狀態", "Review status")}: {selectedAnswer.reviewStatus ?? "pending"}</p><div className="editor-controls"><button type="button" disabled={closed || !score || !questionId} onClick={() => void saveGrade(false)}>{L("保存此題", "Save question")}</button><button type="button" className="secondary-action" disabled={closed || !score || !questionId} onClick={() => void saveGrade(true)}>{L("保存並下一題", "Save & next")}</button><button type="button" disabled={closed || !releaseReady} onClick={() => void release()}>{L("發布成績", "Release grade")}</button></div></article>}
+      </div>
+    </>}
+  </section>;
 }
 
 function TeacherContentEditor({ L, showToast, courses, initialCourseId }: { L: Translator; showToast: (message: string) => void; courses: CourseDto[]; initialCourseId?: string }) {
