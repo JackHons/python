@@ -57,6 +57,34 @@ function parseAuthoringJson(content: string) {
   }
 }
 
+function parseArtifactJson(content: string) {
+  const cleaned = content.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+  try {
+    const parsed = JSON.parse(cleaned);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("not an object");
+    return parsed as Record<string, any>;
+  } catch {
+    throw new DomainError("ai_artifact_invalid", "AI provider returned invalid artifact JSON", 502);
+  }
+}
+
+function artifactText(value: unknown, field: string, max: number, required = false) {
+  if (typeof value !== "string") {
+    if (required) throw new DomainError("ai_artifact_invalid", `AI artifact ${field} is required`, 502);
+    return null;
+  }
+  const result = value.trim();
+  if (required && !result) throw new DomainError("ai_artifact_invalid", `AI artifact ${field} is required`, 502);
+  if (result.length > max) throw new DomainError("ai_artifact_invalid", `AI artifact ${field} is too long`, 502);
+  return result || null;
+}
+
+function artifactList(value: unknown, field: string, maxItems: number, maxItemLength: number) {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value) || value.length > maxItems) throw new DomainError("ai_artifact_invalid", `AI artifact ${field} is invalid`, 502);
+  return value.map((item, index) => artifactText(item, `${field}[${index}]`, maxItemLength, true));
+}
+
 function boundedText(value: unknown, field: string, max: number, required = false) {
   if (typeof value !== "string") {
     if (required) throw new DomainError("ai_question_invalid", `AI question ${field} is required`, 502);
@@ -427,6 +455,43 @@ export class AiService {
       throw domain;
     }
   }
+  async requestArtifact(actor: Actor, input: { requestKey: string; purpose: "summary" | "translation" | "grading" | "feedback"; artifactType: "material" | "translation" | "feedback" | "suggested_score"; payload: Record<string, unknown>; instruction: string }) {
+    this.assertActive(actor);
+    requireStaff(actor);
+    if (!input.requestKey?.trim() || input.requestKey.trim().length > 128) throw new DomainError("invalid_input", "AI artifact request key is required");
+    const settings = this.quota.settings();
+    if (!settings.enabled || !settings.provider_config_id) throw new DomainError("ai_disabled", "AI assistant is disabled", 503);
+    const providerConfig = this.db.get<{ default_model: string }>("SELECT default_model FROM ai_provider_configs WHERE id = ? AND enabled = 1", [settings.provider_config_id]);
+    if (!providerConfig) throw new DomainError("provider_unavailable", "Configured AI provider is unavailable", 503);
+    if (!input.instruction.trim()) throw new DomainError("invalid_input", "AI artifact instruction is required");
+    const messages: ProviderMessage[] = [
+      { role: "system", content: `${input.instruction.trim()} Return JSON only, with no markdown and no extra keys. Do not include personal identifiers.` },
+      { role: "user", content: JSON.stringify(input.payload) },
+    ];
+    const estimated = Math.max(1, Math.min(100000, Math.ceil(JSON.stringify(messages).length / 4) + 512));
+    const reservationKey = `artifact:${input.artifactType}:${input.requestKey.trim()}`;
+    let reservation: Record<string, any>;
+    try {
+      reservation = this.quota.reserve(actor.id, reservationKey, estimated, settings.provider_config_id) as Record<string, any>;
+    } catch (error) {
+      const domain = error instanceof DomainError ? error : new DomainError("ai_quota_failed", "AI quota reservation failed", 500);
+      audit(this.db, actor.id, "ai.artifact_generation_rejected", "ai_request", input.requestKey, "denied", { artifactType: input.artifactType, code: domain.code });
+      throw domain;
+    }
+    if (reservation.status !== "reserved") return { requestKey: input.requestKey.trim(), reservationId: reservation.id, status: reservation.status, content: null, replay: true };
+    const started = Date.now();
+    try {
+      const response = await this.provider.generate({ model: providerConfig.default_model, messages, temperature: 0.2 });
+      const settled = this.quota.settle(reservation.id, response.inputTokens, response.outputTokens, response.model ?? providerConfig.default_model, input.purpose, settings.provider_config_id, null, Date.now() - started, "success", null);
+      audit(this.db, actor.id, "ai.artifact_generation_completed", "ai_request", input.requestKey, "success", { artifactType: input.artifactType, reservationId: reservation.id, inputTokens: response.inputTokens, outputTokens: response.outputTokens });
+      return { requestKey: input.requestKey.trim(), reservationId: (settled as Record<string, any>).id, status: "success", content: response.content, usage: { inputTokens: response.inputTokens, outputTokens: response.outputTokens } };
+    } catch (error) {
+      const domain = error instanceof DomainError ? error : new DomainError("provider_failed", "AI provider failed", 502);
+      this.quota.settle(reservation.id, 0, 0, providerConfig.default_model, input.purpose, settings.provider_config_id, null, Date.now() - started, "error", domain.code);
+      audit(this.db, actor.id, "ai.artifact_generation_failed", "ai_request", input.requestKey, "failure", { artifactType: input.artifactType, reservationId: reservation.id, code: domain.code });
+      throw domain;
+    }
+  }
   async requestAuthoring(actor: Actor, input: { requestKey: string; courseId: string; type: string; topic: string; concepts: string[]; instructions?: string; maxScore?: number }) {
     this.assertActive(actor);
     requireStaff(actor);
@@ -594,6 +659,105 @@ export class AiReviewService {
     const content = this.normalizeQuestionContent(parseAuthoringJson(result.content), { type: input.type, concepts, maxScore: input.maxScore, unitId: input.unitId });
     content.requestKey = requestKey;
     return this.create(actor, { artifactType: "question", courseId, content });
+  }
+  private normalizeGeneratedArtifact(raw: Record<string, any>, input: { artifactType: "material" | "translation" | "feedback" | "suggested_score"; requestKey: string; targetLocale?: string; maxScore?: number }) {
+    if (input.artifactType === "material") {
+      const summaryZh = artifactText(raw.summaryZh, "summaryZh", 12000, true);
+      const summaryEn = artifactText(raw.summaryEn, "summaryEn", 12000);
+      const keyPoints = artifactList(raw.keyPoints, "keyPoints", 12, 500);
+      if (!keyPoints.length) throw new DomainError("ai_artifact_invalid", "AI artifact keyPoints are required", 502);
+      return { requestKey: input.requestKey, summaryZh, summaryEn, keyPoints };
+    }
+    if (input.artifactType === "translation") {
+      const targetLocale = input.targetLocale ?? artifactText(raw.targetLocale, "targetLocale", 32, true);
+      if (!targetLocale || !/^[A-Za-z0-9][A-Za-z0-9-]{1,31}$/.test(targetLocale)) throw new DomainError("ai_artifact_invalid", "AI artifact targetLocale is invalid", 502);
+      return { requestKey: input.requestKey, sourceLocale: artifactText(raw.sourceLocale, "sourceLocale", 32), targetLocale, translatedText: artifactText(raw.translatedText, "translatedText", 30000, true) };
+    }
+    if (input.artifactType === "feedback") {
+      return {
+        requestKey: input.requestKey,
+        feedbackZh: artifactText(raw.feedbackZh, "feedbackZh", 10000, true),
+        feedbackEn: artifactText(raw.feedbackEn, "feedbackEn", 10000),
+        strengths: artifactList(raw.strengths, "strengths", 10, 500),
+        improvements: artifactList(raw.improvements, "improvements", 10, 500),
+        nextStep: artifactText(raw.nextStep, "nextStep", 2000),
+      };
+    }
+    const score = typeof raw.score === "number" ? raw.score : Number.NaN;
+    if (!Number.isFinite(score) || score < 0 || score > Number(input.maxScore ?? 0)) throw new DomainError("ai_artifact_invalid", "AI suggested score is invalid", 502);
+    return { requestKey: input.requestKey, score, reason: artifactText(raw.reason, "reason", 10000, true), rubricEvidence: artifactList(raw.rubricEvidence, "rubricEvidence", 12, 1000) };
+  }
+  private artifactRequestKey(courseId: string, artifactType: string, requestKey: string) {
+    return this.db.all<Record<string, any>>("SELECT id, content_json FROM ai_artifacts WHERE course_id = ? AND artifact_type = ? ORDER BY created_at DESC", [courseId, artifactType]).find((row) => {
+      try { return parseJson(row.content_json, "contentJson")?.requestKey === requestKey; } catch { return false; }
+    });
+  }
+  async generateArtifact(actor: Actor, courseId: string, input: { artifactType: "material" | "translation" | "feedback" | "suggested_score"; requestKey: string; materialId?: string; submissionAnswerId?: string; targetLocale?: string }, ai: AiService) {
+    requireStaff(actor);
+    if (!canManageCourse(this.db, actor, courseId)) throw new DomainError("not_found", "Course not found", 404);
+    const requestKey = input.requestKey?.trim();
+    if (!requestKey || requestKey.length > 128) throw new DomainError("invalid_input", "AI artifact requestKey is required");
+    const existing = this.artifactRequestKey(courseId, input.artifactType, requestKey);
+    if (existing) return this.getStaff(actor, existing.id);
+
+    let materialId: string | undefined;
+    let submissionAnswerId: string | undefined;
+    let studentId: string | undefined;
+    let purpose: "summary" | "translation" | "grading" | "feedback";
+    let payload: Record<string, unknown>;
+    let instruction: string;
+    let maxScore: number | undefined;
+    if (input.artifactType === "material" || input.artifactType === "translation") {
+      if (!input.materialId) throw new DomainError("invalid_input", "materialId is required");
+      const material = this.db.get<Record<string, any>>("SELECT m.id, m.status, m.title_zh, m.title_en, m.body_zh, m.body_en, u.course_id FROM materials m JOIN units u ON u.id = m.unit_id WHERE m.id = ?", [input.materialId]);
+      if (!material || material.course_id !== courseId || material.status === "archived") throw new DomainError("invalid_reference", "Material and course must match");
+      const sourceText = [material.title_zh, material.title_en, material.body_zh, material.body_en].filter((value) => typeof value === "string" && value.trim()).join("\n\n").slice(0, 30000);
+      if (!sourceText) throw new DomainError("invalid_input", "Material has no text available for AI generation");
+      materialId = material.id;
+      if (input.artifactType === "material") {
+        purpose = "summary";
+        instruction = "Create an accurate educational material summary. Required fields: summaryZh (Traditional Chinese), summaryEn (English, may be null), keyPoints (one to twelve concise strings). Preserve uncertainty and do not invent facts.";
+        payload = { materialTitle: material.title_zh, sourceText };
+      } else {
+        const targetLocale = input.targetLocale?.trim();
+        if (!targetLocale || !/^[A-Za-z0-9][A-Za-z0-9-]{1,31}$/.test(targetLocale)) throw new DomainError("invalid_input", "A valid targetLocale is required");
+        purpose = "translation";
+        instruction = "Translate the supplied educational material faithfully. Required fields: sourceLocale (short locale or null), targetLocale, translatedText. Preserve code, URLs, markdown structure, and technical identifiers.";
+        payload = { materialTitle: material.title_zh, sourceText, targetLocale };
+      }
+    } else {
+      if (!input.submissionAnswerId) throw new DomainError("invalid_input", "submissionAnswerId is required");
+      const answer = this.db.get<Record<string, any>>(`SELECT sa.id, sa.student_id, sa.answer_text, sa.answer_json, sa.question_snapshot_json, sa.assignment_id,
+        a.course_id, a.title_zh AS assignment_title, q.prompt_zh, q.prompt_en, q.max_score, s.status AS submission_status
+        FROM submission_answers sa JOIN assignments a ON a.id = sa.assignment_id JOIN submissions s ON s.id = sa.submission_id
+        LEFT JOIN questions q ON q.id = sa.question_id WHERE sa.id = ?`, [input.submissionAnswerId]);
+      if (!answer || answer.course_id !== courseId || answer.submission_status === "draft") throw new DomainError("invalid_reference", "Submission answer and course must match");
+      const answerText = [answer.answer_text, answer.answer_json].filter((value) => typeof value === "string" && value.trim()).join("\n").slice(0, 30000);
+      if (!answerText) throw new DomainError("invalid_input", "Submission answer has no content for AI generation");
+      const snapshot = parseJson(answer.question_snapshot_json, "questionSnapshotJson") as Record<string, any>;
+      maxScore = Number(answer.max_score ?? snapshot.maxScore ?? snapshot.max_score ?? 0);
+      if (!Number.isFinite(maxScore) || maxScore < 0) throw new DomainError("invalid_reference", "Question max score is invalid");
+      submissionAnswerId = answer.id;
+      studentId = answer.student_id;
+      const questionPrompt = String(answer.prompt_zh ?? snapshot.promptZh ?? snapshot.prompt_zh ?? "").slice(0, 12000);
+      if (input.artifactType === "suggested_score") {
+        purpose = "grading";
+        instruction = "Suggest a fair score for the submitted answer using only the question and answer. Required fields: score (number from zero through maxScore), reason, rubricEvidence (zero to twelve concise strings). Never make the final grading decision.";
+        payload = { assignmentTitle: answer.assignment_title, questionPrompt, answer: answerText, maxScore };
+      } else {
+        purpose = "feedback";
+        instruction = "Write constructive teacher-reviewed feedback for the submitted answer. Required fields: feedbackZh (Traditional Chinese), feedbackEn (English, may be null), strengths (zero to ten strings), improvements (zero to ten strings), nextStep (may be null). Do not reveal or infer the student's identity.";
+        payload = { assignmentTitle: answer.assignment_title, questionPrompt, answer: answerText, maxScore };
+      }
+    }
+    const result = await ai.requestArtifact(actor, { requestKey, purpose, artifactType: input.artifactType, payload, instruction });
+    if (!result.content) {
+      const replay = this.artifactRequestKey(courseId, input.artifactType, requestKey);
+      if (replay) return this.getStaff(actor, replay.id);
+      throw new DomainError("ai_request_replay", "AI request was already completed; retrieve the existing artifact", 409);
+    }
+    const content = this.normalizeGeneratedArtifact(parseArtifactJson(result.content), { artifactType: input.artifactType, requestKey, targetLocale: input.targetLocale, maxScore });
+    return this.create(actor, { artifactType: input.artifactType, courseId, content, studentId, materialId, submissionAnswerId });
   }
   create(actor: Actor, input: { artifactType: string; courseId: string; content: unknown; studentId?: string; materialId?: string; questionId?: string; submissionAnswerId?: string }) {
     requireStaff(actor);

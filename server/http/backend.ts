@@ -448,6 +448,18 @@ export function createBackendApp(options: BackendOptions = {}) {
         const b = await input(request);
         return json({ artifact: await services.aiReview.generateQuestion(actor, id(p[1], "courseId"), { ...b, requestKey: id(b.requestKey, "requestKey"), type: String(b.type ?? ""), topic: String(b.topic ?? "") } as never, services.ai) }, 201, { "x-request-id": requestId });
       }
+      if (method === "POST" && p[0] === "courses" && p[2] === "ai-artifacts" && p[3] === "generate" && p.length === 4) {
+        const b = await input(request);
+        const artifactType = String(b.artifactType ?? "");
+        if (!["material", "translation", "feedback", "suggested_score"].includes(artifactType)) throw new DomainError("invalid_input", "AI artifact type is invalid");
+        return json({ artifact: await services.aiReview.generateArtifact(actor, id(p[1], "courseId"), {
+          artifactType: artifactType as "material" | "translation" | "feedback" | "suggested_score",
+          requestKey: id(b.requestKey, "requestKey"),
+          materialId: b.materialId ? id(b.materialId, "materialId") : undefined,
+          submissionAnswerId: b.submissionAnswerId ? id(b.submissionAnswerId, "submissionAnswerId") : undefined,
+          targetLocale: b.targetLocale ? String(b.targetLocale) : undefined,
+        }, services.ai) }, 201, { "x-request-id": requestId });
+      }
       if (method === "GET" && p[0] === "ai" && p[1] === "conversations" && p.length === 3) return json({ conversation: services.ai.listConversation(actor, id(p[2], "conversationId")) }, 200, { "x-request-id": requestId });
       if (method === "POST" && p[0] === "ai" && p[1] === "artifacts" && p.length === 2) return json({ artifact: services.aiReview.create(actor, (await input(request)) as never) }, 201, { "x-request-id": requestId });
       if (method === "GET" && p[0] === "ai" && p[1] === "artifacts" && p.length === 3) return json({ artifact: actor.role === "student" ? services.aiReview.getStudent(actor, id(p[2], "artifactId")) : services.aiReview.getStaff(actor, id(p[2], "artifactId")) }, 200, { "x-request-id": requestId });

@@ -32,6 +32,7 @@ export const API_ROUTE_CONTRACTS: ApiRouteContract[] = [
   route(/^\/courses\/[^/]+\/questions$/, "/courses/:courseId/questions", "/courses/course-1/questions", ["GET"], staff),
   route(/^\/courses\/[^/]+\/question-library$/, "/courses/:courseId/question-library", "/courses/course-1/question-library", ["GET"], staff),
   route(/^\/courses\/[^/]+\/ai-authoring\/questions$/, "/courses/:courseId/ai-authoring/questions", "/courses/course-1/ai-authoring/questions", ["POST"], staff, true),
+  route(/^\/courses\/[^/]+\/ai-artifacts\/generate$/, "/courses/:courseId/ai-artifacts/generate", "/courses/course-1/ai-artifacts/generate", ["POST"], staff, true),
   route(/^\/courses\/[^/]+\/classrooms$/, "/courses/:courseId/classrooms", "/courses/course-1/classrooms", ["GET"], all),
   route(/^\/courses\/[^/]+\/execution-policy$/, "/courses/:courseId/execution-policy", "/courses/course-1/execution-policy", ["GET", "PATCH"], all, false, undefined, { GET: all, PATCH: staff }),
   route(/^\/courses\/[^/]+\/ai-artifacts$/, "/courses/:courseId/ai-artifacts", "/courses/course-1/ai-artifacts", ["GET"], staff),
