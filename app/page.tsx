@@ -7,7 +7,7 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { ApiError, learningApi, sortAssignmentsByDue, type AdminStatusDto, type AiArtifactDto, type AiGeneratedArtifactType, type AiQuestionArtifactContent, type AiProviderDto, type AiSettingsDto, type AiStatusDto, type AnalyticsDto, type AnnouncementDto, type AssignmentDto, type AssignmentItemDto, type AuditLogDto, type BackupDto, type ClassDto, type ClassroomSessionDto, type ClassroomStateDto, type CodeSimilarityReportDto, type CourseDto, type EmailDeliveryDto, type EmailSettingsDto, type ExecutionDto, type ExportFormat, type ExportJobDto, type ExportReportType, type ExportStatus, type FileAssetDto, type GamificationDto, type MaterialConversionDto, type MaterialDto, type MaterialPreviewDto, type NotificationDto, type QuestionDto, type QuestionHintDto, type QuestionLibraryItemDto, type SessionUser, type StudentQuestionDto, type SubmissionDto, type SubmissionListDto, type UnitDto, type UserDto } from "./lib/api-client";
+import { ApiError, learningApi, sortAssignmentsByDue, type AdminStatusDto, type AiArtifactDto, type AiGeneratedArtifactType, type AiQuestionArtifactContent, type AiProviderDto, type AiSettingsDto, type AiStatusDto, type AnalyticsDto, type AnnouncementDto, type AssignmentDto, type AssignmentItemDto, type AuditLogDto, type BackupDto, type ClassDto, type ClassroomSessionDto, type ClassroomStateDto, type CodeSimilarityReportDto, type CourseDto, type EmailDeliveryDto, type EmailSettingsDto, type ExecutionDto, type ExportFormat, type ExportJobDto, type ExportReportType, type ExportStatus, type FileAssetDto, type GamificationDto, type GamificationSettingsDto, type MaterialConversionDto, type MaterialDto, type MaterialPreviewDto, type NotificationDto, type QuestionDto, type QuestionHintDto, type QuestionLibraryItemDto, type SessionUser, type StudentQuestionDto, type SubmissionDto, type SubmissionListDto, type UnitDto, type UserDto } from "./lib/api-client";
 import { PORTAL_ROUTES, compatiblePath, resolvePortalPath, roleHome, safeReturnTo } from "./lib/portal-routes";
 import { hydratePortalDeepLink } from "./lib/deep-link-loader";
 import { LatestRequestGate } from "./lib/latest-request";
@@ -424,7 +424,11 @@ export default function Home() {
         {role === "admin" && staffView === "admin-backups" && <AdminBackupCentre L={L} showToast={showToast} onEnabledChange={(enabled) => setAdminStatus((current) => current ? { ...current, backup: { ...current.backup, enabled } } : current)} />}
         {role === "admin" && staffView === "admin-audit" && <AdminAuditCentre L={L} />}
         {role === "admin" && staffView === "admin-email" && <AdminEmailOps L={L} showToast={showToast} />}
-        {role === "admin" && !["ai-settings", "admin-backups", "admin-audit", "admin-email"].includes(staffView) && <AdminCentre L={L} showToast={showToast} status={adminStatus} />}
+        {role === "admin" && staffView === "admin" && <AdminCentre L={L} showToast={showToast} status={adminStatus} />}
+        {role === "admin" && staffView === "admin-users" && <AdminUsersCentre L={L} showToast={showToast} />}
+        {role === "admin" && staffView === "admin-classes" && <AdminClassesCentre L={L} />}
+        {role === "admin" && staffView === "admin-courses" && <AdminCoursesCentre L={L} />}
+        {role === "admin" && staffView === "admin-settings" && <AdminSettingsCentre L={L} status={adminStatus} showToast={showToast} />}
         </>}
       </main>
       </div>
@@ -1933,6 +1937,83 @@ function AdminAuditCentre({ L }: { L: Translator }) {
     {error && <p role="alert" className="form-error">{error}</p>}
     <section className="settings-card"><form className="form-grid" onSubmit={(event) => { event.preventDefault(); void refresh(); }}><label>{L("動作", "Action")}<input value={action} onChange={(event) => setAction(event.target.value)} placeholder="backup.created" /></label><label>{L("關聯／請求識別碼", "Correlation/request id")}<input value={correlationId} onChange={(event) => setCorrelationId(event.target.value)} /></label><label>{L("上限", "Limit")}<input type="number" min="1" max="500" value={limit} onChange={(event) => setLimit(Math.min(500, Math.max(1, Number(event.target.value) || 1)))} /></label><button type="submit" disabled={loading}>{loading ? L("查詢中…", "Loading…") : L("查詢", "Search")}</button></form></section>
     <section className="settings-card"><h2>{L("結果", "Results")}</h2>{loading ? <p className="empty-copy">{L("正在載入稽核紀錄…", "Loading audit logs…")}</p> : logs.length === 0 ? <div className="empty-state"><h2>{L("沒有符合的紀錄", "No matching records")}</h2><p>{L("請調整篩選條件後再查詢。", "Adjust the filters and search again.")}</p></div> : <ul className="data-list">{logs.map((log) => <li key={log.id}><span><b>{log.action}</b> · {log.result} · {log.entity_type}{log.entity_id ? `:${log.entity_id}` : ""} · {new Date(log.created_at).toLocaleString()}<br />{L("執行者", "Actor")}: {log.actor_id ?? "—"} · {L("關聯／請求", "Correlation/request")}: {log.request_id ?? "—"}<pre>{metadata(log.metadata_json)}</pre></span></li>)}</ul>}</section>
+  </div>;
+}
+
+function AdminSectionHeading({ L, titleZh, titleEn, descriptionZh, descriptionEn, status }: { L: Translator; titleZh: string; titleEn: string; descriptionZh: string; descriptionEn: string; status?: string }) {
+  return <div className="page-heading"><div><span className="grade-tag">{L("管理中心", "ADMIN CENTRE")}</span><h1>{L(titleZh, titleEn)}</h1><p>{L(descriptionZh, descriptionEn)}</p></div>{status && <span className="prototype-chip">{status}</span>}</div>;
+}
+
+function AdminUsersCentre({ L, showToast }: { L: Translator; showToast: (message: string) => void }) {
+  const [users, setUsers] = useState<UserDto[]>([]);
+  const [role, setNewRole] = useState<"teacher" | "student">("student");
+  const [username, setUsername] = useState("");
+  const [name, setName] = useState("");
+  const [studentNumber, setStudentNumber] = useState("");
+  const [oneTimePassword, setOneTimePassword] = useState("");
+  const [error, setError] = useState("");
+  async function refresh() { try { const result = await learningApi.users(); setUsers(result.users); setError(""); } catch (caught) { setError(caught instanceof Error ? caught.message : L("帳戶資料載入失敗", "Accounts could not be loaded")); } }
+  useEffect(() => { void refresh(); }, []);
+  async function createUser(event: React.FormEvent) { event.preventDefault(); try { const result = await learningApi.createUser({ role, username, chineseName: name, studentNumber: role === "student" ? studentNumber : undefined }); setOneTimePassword(result.initialPassword); setUsername(""); setName(""); setStudentNumber(""); await refresh(); } catch (caught) { setError(caught instanceof Error ? caught.message : L("建立帳戶失敗", "Account creation failed")); } }
+  async function resetPassword(userId: string) { try { const result = await learningApi.resetPassword(userId); setOneTimePassword(result.initialPassword); showToast(L("已產生一次性初始密碼", "One-time initial password generated")); } catch (caught) { setError(caught instanceof Error ? caught.message : L("重設密碼失敗", "Password reset failed")); } }
+  async function archiveUser(userId: string) { try { await learningApi.archiveUser(userId); await refresh(); showToast(L("帳戶已封存", "Account archived")); } catch (caught) { setError(caught instanceof Error ? caught.message : L("封存帳戶失敗", "Account archive failed")); } }
+  return <div className="admin-page admin-route-centre">
+    <AdminSectionHeading L={L} titleZh="帳戶管理" titleEn="Account management" descriptionZh="建立、重設及封存學生與教師帳戶。" descriptionEn="Create, reset and archive student and teacher accounts." status={L(`${users.length} 個帳戶`, `${users.length} accounts`)} />
+    {error && <p role="alert" className="form-error">{error}</p>}
+    {oneTimePassword && <section className="one-time-secret" role="status"><strong>{L("一次性初始密碼（離開後不再顯示）", "One-time initial password (not shown again)")}</strong><code>{oneTimePassword}</code><button type="button" onClick={() => setOneTimePassword("")}>{L("我已安全保存", "I stored it securely")}</button></section>}
+    <section className="settings-card"><h2>{L("建立帳戶", "Create account")}</h2><form className="form-grid" onSubmit={createUser}><label>{L("角色", "Role")}<select value={role} onChange={(event) => setNewRole(event.target.value as "teacher" | "student")}><option value="student">{L("學生", "Student")}</option><option value="teacher">{L("教師", "Teacher")}</option></select></label><label>{L("帳戶", "Username")}<input value={username} onChange={(event) => setUsername(event.target.value)} required /></label><label>{L("中文姓名", "Chinese name")}<input value={name} onChange={(event) => setName(event.target.value)} required /></label>{role === "student" && <label>{L("學號", "Student number")}<input value={studentNumber} onChange={(event) => setStudentNumber(event.target.value)} required /></label>}<button type="submit">{L("建立帳戶", "Create account")}</button></form></section>
+    <section className="settings-card"><h2>{L("帳戶列表", "Accounts")}</h2>{users.length === 0 ? <p className="empty-copy">{L("目前沒有可顯示的帳戶。", "No accounts to display.")}</p> : <ul className="data-list">{users.map((user) => <li key={user.id}><span><b>{user.chinese_name}</b> · {user.username} · {user.role} · {user.status}</span>{user.role !== "admin" && <span><button type="button" onClick={() => void resetPassword(user.id)}>{L("重設密碼", "Reset password")}</button><button type="button" className="secondary-action" onClick={() => { if (window.confirm(L("封存帳戶並撤銷登入？", "Archive this account and revoke sessions?"))) void archiveUser(user.id); }}>{L("封存", "Archive")}</button></span>}</li>)}</ul>}</section>
+  </div>;
+}
+
+function AdminClassesCentre({ L }: { L: Translator }) {
+  const [users, setUsers] = useState<UserDto[]>([]);
+  const [classes, setClasses] = useState<ClassDto[]>([]);
+  const [className, setClassName] = useState("");
+  const [academicYear, setAcademicYear] = useState("2026-2027");
+  const [teacherId, setTeacherId] = useState("");
+  const [error, setError] = useState("");
+  async function refresh() { try { const [userResult, classResult] = await Promise.all([learningApi.users("teacher"), learningApi.classes()]); setUsers(userResult.users); setClasses(classResult.classes); setError(""); } catch (caught) { setError(caught instanceof Error ? caught.message : L("班別資料載入失敗", "Classes could not be loaded")); } }
+  useEffect(() => { void refresh(); }, []);
+  async function createClass(event: React.FormEvent) { event.preventDefault(); try { await learningApi.createClass({ name: className, academicYear, teacherId }); setClassName(""); setTeacherId(""); await refresh(); } catch (caught) { setError(caught instanceof Error ? caught.message : L("建立班別失敗", "Class creation failed")); } }
+  return <div className="admin-page admin-route-centre">
+    <AdminSectionHeading L={L} titleZh="班別管理" titleEn="Class management" descriptionZh="建立學年班別並指定負責教師。" descriptionEn="Create academic-year classes and assign an owner teacher." status={L(`${classes.length} 個班別`, `${classes.length} classes`)} />
+    {error && <p role="alert" className="form-error">{error}</p>}
+    <section className="settings-card"><h2>{L("建立班別", "Create class")}</h2><form className="form-grid" onSubmit={createClass}><label>{L("班別", "Class name")}<input value={className} onChange={(event) => setClassName(event.target.value)} required /></label><label>{L("學年", "Academic year")}<input value={academicYear} onChange={(event) => setAcademicYear(event.target.value)} required /></label><label>{L("負責教師", "Owner teacher")}<select value={teacherId} onChange={(event) => setTeacherId(event.target.value)} required><option value="">—</option>{users.map((user) => <option key={user.id} value={user.id}>{user.chinese_name} · {user.username}</option>)}</select></label><button type="submit">{L("建立班別", "Create class")}</button></form></section>
+    <section className="settings-card"><h2>{L("班別列表", "Classes")}</h2>{classes.length === 0 ? <p className="empty-copy">{L("目前沒有可顯示的班別。", "No classes to display.")}</p> : <ul className="data-list">{classes.map((item) => <li key={item.id}><span><b>{item.name}</b> · {item.academic_year}</span><small>{item.status}</small></li>)}</ul>}</section>
+  </div>;
+}
+
+function AdminCoursesCentre({ L }: { L: Translator }) {
+  const [courses, setCourses] = useState<CourseDto[]>([]);
+  const [title, setTitle] = useState("");
+  const [error, setError] = useState("");
+  async function refresh() { try { const result = await learningApi.courses(); setCourses(result.courses); setError(""); } catch (caught) { setError(caught instanceof Error ? caught.message : L("課程資料載入失敗", "Courses could not be loaded")); } }
+  useEffect(() => { void refresh(); }, []);
+  async function createCourse(event: React.FormEvent) { event.preventDefault(); try { await learningApi.createCourse({ titleZh: title.trim(), titleEn: title.trim(), status: "draft" }); setTitle(""); await refresh(); } catch (caught) { setError(caught instanceof Error ? caught.message : L("建立課程失敗", "Course creation failed")); } }
+  async function toggleCourse(course: CourseDto) { try { await learningApi.updateCourse(course.id, { status: course.status === "published" ? "draft" : "published" }); await refresh(); } catch (caught) { setError(caught instanceof Error ? caught.message : L("更新課程失敗", "Course update failed")); } }
+  async function archiveCourse(courseId: string) { try { await learningApi.archiveCourse(courseId); await refresh(); } catch (caught) { setError(caught instanceof Error ? caught.message : L("封存課程失敗", "Course archive failed")); } }
+  return <div className="admin-page admin-route-centre">
+    <AdminSectionHeading L={L} titleZh="課程管理" titleEn="Course management" descriptionZh="建立課程、管理發布狀態及封存課程。" descriptionEn="Create courses, manage publication status and archive courses." status={L(`${courses.length} 個課程`, `${courses.length} courses`)} />
+    {error && <p role="alert" className="form-error">{error}</p>}
+    <section className="settings-card"><h2>{L("建立課程", "Create course")}</h2><form className="form-grid" onSubmit={createCourse}><label>{L("課程名稱", "Course title")}<input value={title} onChange={(event) => setTitle(event.target.value)} required /></label><button type="submit">{L("建立草稿", "Create draft")}</button></form></section>
+    <section className="settings-card"><h2>{L("課程列表", "Courses")}</h2>{courses.length === 0 ? <p className="empty-copy">{L("目前沒有可顯示的課程。", "No courses to display.")}</p> : <ul className="data-list">{courses.map((course) => <li key={course.id}><span><b>{course.title_zh}</b> · {course.status}{course.join_code ? ` · ${course.join_code}` : ""}</span><span><button type="button" onClick={() => void toggleCourse(course)}>{course.status === "published" ? L("改為草稿", "Set draft") : L("發布", "Publish")}</button><button type="button" className="secondary-action" onClick={() => { if (window.confirm(L("封存此課程？", "Archive this course?"))) void archiveCourse(course.id); }}>{L("封存", "Archive")}</button></span></li>)}</ul>}</section>
+  </div>;
+}
+
+function AdminSettingsCentre({ L, status, showToast }: { L: Translator; status: AdminStatusDto | null; showToast: (message: string) => void }) {
+  const [settings, setSettings] = useState<GamificationSettingsDto | null>(null);
+  const [error, setError] = useState("");
+  async function refresh() { try { const result = await learningApi.gamificationSettings(); setSettings(result.settings); setError(""); } catch (caught) { setError(caught instanceof Error ? caught.message : L("系統設定載入失敗", "System settings could not be loaded")); } }
+  useEffect(() => { void refresh(); }, []);
+  async function update(key: "xpEnabled" | "badgesEnabled" | "streaksEnabled" | "leaderboardEnabled", value: boolean) { try { const result = await learningApi.updateGamificationSettings({ [key]: value }); setSettings(result.settings); showToast(L("設定已更新", "Settings updated")); } catch (caught) { setError(caught instanceof Error ? caught.message : L("更新設定失敗", "Settings update failed")); } }
+  const rows: Array<{ key: "xpEnabled" | "badgesEnabled" | "streaksEnabled" | "leaderboardEnabled"; titleZh: string; titleEn: string; value: number }> = settings ? [{ key: "xpEnabled", titleZh: "經驗值", titleEn: "XP", value: settings.xp_enabled }, { key: "badgesEnabled", titleZh: "徽章", titleEn: "Badges", value: settings.badges_enabled }, { key: "streaksEnabled", titleZh: "連續學習", titleEn: "Streaks", value: settings.streaks_enabled }, { key: "leaderboardEnabled", titleZh: "排行榜", titleEn: "Leaderboard", value: settings.leaderboard_enabled }] : [];
+  return <div className="admin-page admin-route-centre">
+    <AdminSectionHeading L={L} titleZh="系統設定" titleEn="System settings" descriptionZh="管理平台狀態、學習化功能與安全入口。" descriptionEn="Manage platform status, learning features and security entry points." />
+    {error && <p role="alert" className="form-error">{error}</p>}
+    <section className="admin-metrics"><MetricBlock label={L("AI 服務", "AI service")} value={status?.ai.configured ? L("已設定", "Configured") : L("未設定", "Not configured")} note={L("前往 AI 設定管理供應商", "Manage providers in AI settings")} tone="blue" /><MetricBlock label={L("備份", "Backups")} value={status?.backup.enabled ? L("已啟用", "Enabled") : L("已停用", "Disabled")} note={L("前往備份管理執行操作", "Open backup management for actions")} tone="amber" /><MetricBlock label={L("系統", "System")} value={L("正常", "Ready")} note={L("後端健康狀態已驗證", "Backend health has been verified")} tone="coral" /></section>
+    <section className="settings-card"><h2>{L("學習功能開關", "Learning feature switches")}</h2>{rows.length === 0 ? <p className="empty-copy">{L("正在載入設定…", "Loading settings…")}</p> : <div className="policy-list">{rows.map((row) => <PolicyRow key={row.key} icon="◉" title={L(row.titleZh, row.titleEn)} note={row.value ? L("已啟用", "Enabled") : L("已停用", "Disabled")} toggle={Boolean(row.value)} onToggle={() => void update(row.key, !row.value)} />)}</div>}</section>
+    <section className="settings-card"><h2>{L("管理入口", "Management entry points")}</h2><div className="admin-link-grid"><Link href="/admin/settings/ai">{L("AI 設定", "AI settings")}</Link><Link href="/admin/backups">{L("備份管理", "Backup management")}</Link><Link href="/admin/audit">{L("稽核紀錄", "Audit logs")}</Link><Link href="/admin/email">{L("Email Outbox", "Email Outbox")}</Link></div></section>
   </div>;
 }
 

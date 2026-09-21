@@ -1886,6 +1886,58 @@ button {
   gap: 16px;
 }
 
+.admin-route-centre {
+  display: grid;
+  gap: 16px;
+}
+
+.admin-route-centre .page-heading,
+.admin-route-centre > .settings-card,
+.admin-route-centre > .admin-metrics,
+.admin-route-centre > .one-time-secret,
+.admin-route-centre > .form-error {
+  margin-right: 4.5vw;
+  margin-left: 4.5vw;
+}
+
+.admin-route-centre .page-heading {
+  margin-bottom: 0;
+}
+
+.admin-route-centre > .settings-card {
+  margin-bottom: 0;
+}
+
+.admin-link-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.admin-link-grid a {
+  display: flex;
+  min-height: 42px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 13px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  color: var(--teal-dark);
+  background: #fbfdfd;
+  font-size: 12px;
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.admin-link-grid a::after {
+  content: "→";
+}
+
+.admin-link-grid a:hover {
+  border-color: var(--teal);
+  background: var(--teal-soft);
+}
+
 .settings-card {
   padding: 22px;
 }
