@@ -8,7 +8,7 @@ import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { ApiError, learningApi, sortAssignmentsByDue, type AdminStatusDto, type AiArtifactDto, type AiGeneratedArtifactType, type AiQuestionArtifactContent, type AiProviderDto, type AiSettingsDto, type AiStatusDto, type AnalyticsDto, type AnnouncementDto, type AssignmentDto, type AssignmentItemDto, type AuditLogDto, type BackupDto, type ClassDto, type ClassroomSessionDto, type ClassroomStateDto, type CodeSimilarityReportDto, type CourseDto, type EmailDeliveryDto, type EmailSettingsDto, type ExecutionDto, type ExportFormat, type ExportJobDto, type ExportReportType, type ExportStatus, type FileAssetDto, type GamificationDto, type GamificationSettingsDto, type MaterialConversionDto, type MaterialDto, type MaterialPreviewDto, type NotificationDto, type QuestionDto, type QuestionHintDto, type QuestionLibraryItemDto, type SessionUser, type StudentQuestionDto, type SubmissionDto, type SubmissionListDto, type UnitDto, type UserDto } from "./lib/api-client";
-import { PORTAL_ROUTES, compatiblePath, resolvePortalPath, roleHome, safeReturnTo } from "./lib/portal-routes";
+import { PORTAL_ROUTES, compatiblePath, isPortalRouteActive, portalPathForSection, resolvePortalPath, roleHome, safeReturnTo } from "./lib/portal-routes";
 import { hydratePortalDeepLink } from "./lib/deep-link-loader";
 import { LatestRequestGate } from "./lib/latest-request";
 
@@ -119,6 +119,7 @@ export default function Home() {
     }
     const route = resolvePortalPath(path);
     if (!route || route.role !== role) return setRouteError("forbidden");
+    applyRoute(role, path);
     router.push(path);
   }
   useEffect(() => {
@@ -265,7 +266,7 @@ export default function Home() {
       hydrateSubmission(result.submission);
       setAiHint("");
       const path = "/student/practice/" + encodeURIComponent(result.submission.id);
-      router.push(path);
+      navigatePath(path);
     } catch (caught) {
       showToast(caught instanceof Error ? caught.message : L("無法開始功課", "Unable to start assignment"));
     }
@@ -313,7 +314,7 @@ export default function Home() {
     try {
       const result = await learningApi.joinCourse(joinCode);
       setCourses((current) => current.some((course) => course.id === result.course.id) ? current : [result.course, ...current]);
-      router.push("/student/courses/" + encodeURIComponent(result.course.id));
+      navigatePath("/student/courses/" + encodeURIComponent(result.course.id));
       showToast(L("已加入課程", "Course joined"));
     } catch (caught) { showToast(caught instanceof Error ? caught.message : L("加入課程失敗", "Unable to join course")); }
   }
@@ -345,7 +346,15 @@ export default function Home() {
   }, [activeSubmissionId, activeQuestionId, language, role]);
 
   if (authState === "unauthenticated" && !demoMode) {
-    return <LoginGate L={L} error={authError} onAuthenticated={(user) => { setAuthUser(user); setRole(user.role); setAuthState("authenticated"); applyRoute(user.role); }} />;
+    return <LoginGate L={L} error={authError} onAuthenticated={(user) => {
+      const currentRoute = resolvePortalPath(compatiblePath(pathname ?? "/", user.role));
+      const loginPath = pathname === "/" || currentRoute?.role === user.role ? undefined : roleHome(user.role);
+      setAuthUser(user);
+      setRole(user.role);
+      setAuthState("authenticated");
+      applyRoute(user.role, loginPath);
+      if (loginPath) router.replace(loginPath);
+    }} />;
   }
   if (authState === "loading" && !demoMode) {
     return <div className="site-frame"><main className="page-main"><section className="empty-state"><h1>{L("正在驗證登入狀態…", "Checking your session…")}</h1></section></main></div>;
@@ -368,7 +377,7 @@ export default function Home() {
       />
 
       <div className="portal-layout">
-      <RoleSidebar L={L} role={role} routePath={routePath} />
+      <RoleSidebar L={L} role={role} routePath={routePath} navigatePath={navigatePath} />
       <main className={studentView === "practice" && role === "student" ? "page-main practice-page-main" : "page-main"}>
         {routeError && <RouteAccessError L={L} kind={routeError} home={() => navigatePath(roleHome(role))} />}
         {!routeError && <>
@@ -376,7 +385,7 @@ export default function Home() {
           <StudentHome L={L} navigatePath={navigatePath} courses={courses} assignments={assignments} classrooms={studentClassrooms} notifications={notifications} gamification={gamification} startAssignment={startAssignment} onNotificationRead={(id) => void learningApi.markNotificationRead(id).then(() => setNotifications((current) => current.map((item) => item.id === id ? { ...item, read_at: new Date().toISOString() } : item))).catch(() => showToast(L("通知暫時無法標記為已讀", "Unable to mark notification as read")))} />
         )}
         {role === "student" && studentView === "courses" && <StudentCourses L={L} courses={courses} units={courseUnits} materials={resourceMaterials} assignments={assignments} routePath={routePath} navigatePath={navigatePath} joinCourse={joinCourse} />}
-        {role === "student" && studentView === "notifications" && <StudentNotifications L={L} notifications={notifications} onNotificationRead={(id) => void learningApi.markNotificationRead(id).then(() => setNotifications((current) => current.map((item) => item.id === id ? { ...item, read_at: new Date().toISOString() } : item))).catch(() => showToast(L("通知暫時無法標記為已讀", "Unable to mark notification as read")))} />}
+        {role === "student" && studentView === "notifications" && <StudentNotifications L={L} notifications={notifications} navigatePath={navigatePath} onNotificationRead={(id) => void learningApi.markNotificationRead(id).then(() => setNotifications((current) => current.map((item) => item.id === id ? { ...item, read_at: new Date().toISOString() } : item))).catch(() => showToast(L("通知暫時無法標記為已讀", "Unable to mark notification as read")))} />}
         {role === "student" && studentView === "missions" && (
           <MissionCentre L={L} assignments={assignments} courses={courses} routePath={routePath} navigatePath={navigatePath} startAssignment={startAssignment} />
         )}
@@ -428,7 +437,7 @@ export default function Home() {
         {role === "admin" && staffView === "admin-users" && <AdminUsersCentre L={L} showToast={showToast} />}
         {role === "admin" && staffView === "admin-classes" && <AdminClassesCentre L={L} />}
         {role === "admin" && staffView === "admin-courses" && <AdminCoursesCentre L={L} />}
-        {role === "admin" && staffView === "admin-settings" && <AdminSettingsCentre L={L} status={adminStatus} showToast={showToast} />}
+        {role === "admin" && staffView === "admin-settings" && <AdminSettingsCentre L={L} status={adminStatus} showToast={showToast} navigatePath={navigatePath} />}
         </>}
       </main>
       </div>
@@ -497,9 +506,9 @@ function RouteAccessError({ L, kind, home }: { L: Translator; kind: "forbidden" 
   return <section className="empty-state route-error" role="alert"><span className="grade-tag">{kind === "forbidden" ? "403" : "404"}</span><h1>{kind === "forbidden" ? L("你沒有權限進入此工作區", "You do not have access to this workspace") : L("找不到此頁或內容已封存", "This page was not found or has been archived")}</h1><p>{L("角色與資料範圍會由伺服器再次驗證。", "Role and data scope are checked again by the server.")}</p><button type="button" onClick={home}>{L("返回我的首頁", "Return to my dashboard")}</button></section>;
 }
 
-function RoleSidebar({ L, role, routePath }: { L: Translator; role: Role; routePath: string }) {
+function RoleSidebar({ L, role, routePath, navigatePath }: { L: Translator; role: Role; routePath: string; navigatePath: (path: string) => void }) {
   const routes = PORTAL_ROUTES.filter((item) => item.role === role);
-  return <aside className="role-sidebar" aria-label={L("工作區導覽", "Workspace navigation")}><strong>{role === "student" ? L("學生中心", "Student centre") : role === "teacher" ? L("教師工作台", "Teacher workspace") : L("管理員控制台", "Admin console")}</strong><nav>{routes.map((route) => <Link key={route.path} href={route.path} className={routePath === route.path || (route.path !== roleHome(role) && routePath.startsWith(route.path + "/")) ? "active" : ""}>{L(route.labelZh, route.labelEn)}</Link>)}</nav></aside>;
+  return <aside className="role-sidebar" aria-label={L("工作區導覽", "Workspace navigation")}><strong>{role === "student" ? L("學生中心", "Student centre") : role === "teacher" ? L("教師工作台", "Teacher workspace") : L("管理員控制台", "Admin console")}</strong><nav>{routes.map((route) => { const active = isPortalRouteActive(routePath, route); return <Link prefetch={false} key={route.path} href={route.path} aria-current={active ? "page" : undefined} onClick={(event) => { event.preventDefault(); navigatePath(route.path); }} className={active ? "active" : ""}>{L(route.labelZh, route.labelEn)}</Link>; })}</nav></aside>;
 }
 
 function TopNavigation({
@@ -529,9 +538,6 @@ function TopNavigation({
   navigatePath: (path: string) => void;
   streak: number;
 }) {
-  const studentPath: Record<StudentView, string> = { home: "/student/dashboard", courses: "/student/courses", notifications: "/student/notifications", missions: "/student/dashboard", practice: "/student/courses", resources: "/student/courses", classrooms: "/student/classrooms" };
-  const teacherPath: Partial<Record<StaffView, string>> = { dashboard: "/teacher/dashboard", content: "/teacher/courses", materials: "/teacher/courses", classes: "/teacher/classes", announcements: "/teacher/announcements", exports: "/teacher/exports", assessment: "/teacher/courses", ai: "/teacher/ai-review" };
-
   return (
     <header className="site-header">
       <div className="brand">
@@ -543,17 +549,9 @@ function TopNavigation({
       </div>
 
       <nav className="top-navigation" aria-label={L("主要導覽", "Main navigation")}>
-        {role === "student" && studentNav.map((item) => (
-          <Link
-            key={item.key}
-            href={studentPath[item.key]}
-            className={role === "student" && studentView === item.key ? "top-nav-item active" : "top-nav-item"}
-          >
-            {L(item.zh, item.en)}
-          </Link>
-        ))}
-        {role === "teacher" && teacherNav.map((item) => <Link key={item.key} href={teacherPath[item.key] ?? "/teacher/dashboard"} className={staffView === item.key ? "top-nav-item active" : "top-nav-item"}>{L(item.zh, item.en)}</Link>)}
-        {role === "admin" && <Link className="top-nav-item active" href="/admin/dashboard">{L("管理中心", "Admin centre")}</Link>}
+        {role === "student" && studentNav.map((item) => { const path = portalPathForSection("student", item.key); return <Link prefetch={false} key={item.key} href={path} aria-current={studentView === item.key ? "page" : undefined} onClick={(event) => { event.preventDefault(); navigatePath(path); }} className={studentView === item.key ? "top-nav-item active" : "top-nav-item"}>{L(item.zh, item.en)}</Link>; })}
+        {role === "teacher" && teacherNav.map((item) => { const path = portalPathForSection("teacher", item.key); return <Link prefetch={false} key={item.key} href={path} aria-current={staffView === item.key ? "page" : undefined} onClick={(event) => { event.preventDefault(); navigatePath(path); }} className={staffView === item.key ? "top-nav-item active" : "top-nav-item"}>{L(item.zh, item.en)}</Link>; })}
+        {role === "admin" && <Link prefetch={false} className="top-nav-item active" href="/admin/dashboard" aria-current="page" onClick={(event) => { event.preventDefault(); navigatePath("/admin/dashboard"); }}>{L("管理中心", "Admin centre")}</Link>}
       </nav>
 
       <div className="header-actions">
@@ -693,9 +691,9 @@ function canonicalNotificationPath(path: string | null) {
   return route?.role === "student" ? path : null;
 }
 
-function StudentNotifications({ L, notifications, onNotificationRead }: { L: Translator; notifications: NotificationDto[]; onNotificationRead: (id: string) => void }) {
+function StudentNotifications({ L, notifications, navigatePath, onNotificationRead }: { L: Translator; notifications: NotificationDto[]; navigatePath: (path: string) => void; onNotificationRead: (id: string) => void }) {
   const unreadCount = notifications.filter((item) => !item.read_at).length;
-  return <section className="student-page notification-centre"><div className="page-heading"><div><span className="grade-tag">{L("學生中心", "STUDENT CENTRE")}</span><h1>{L("通知中心", "Notification centre")}</h1><p>{unreadCount ? L(`有 ${unreadCount} 則未讀通知。`, `${unreadCount} unread notifications.`) : L("所有通知都已讀。", "All notifications are read.")}</p></div><span className="prototype-chip">{notifications.length}</span></div><div className="settings-card"><ul className="data-list notification-list">{notifications.map((notification) => { const link = canonicalNotificationPath(notification.link_path); return <li key={notification.id} className={notification.read_at ? "notification-item" : "notification-item unread"}><div><b>{notification.title}</b><small>{new Date(notification.created_at).toLocaleString()} · {notification.type}</small><p>{notification.body}</p>{link && <Link className="text-button" href={link}>{L("查看相關內容", "View related content")}</Link>}</div>{!notification.read_at && <button type="button" className="secondary-action" onClick={() => onNotificationRead(notification.id)}>{L("標記已讀", "Mark read")}</button>}</li>; })}</ul>{!notifications.length && <p className="empty-copy">{L("目前沒有通知。", "There are no notifications yet.")}</p>}</div></section>;
+  return <section className="student-page notification-centre"><div className="page-heading"><div><span className="grade-tag">{L("學生中心", "STUDENT CENTRE")}</span><h1>{L("通知中心", "Notification centre")}</h1><p>{unreadCount ? L(`有 ${unreadCount} 則未讀通知。`, `${unreadCount} unread notifications.`) : L("所有通知都已讀。", "All notifications are read.")}</p></div><span className="prototype-chip">{notifications.length}</span></div><div className="settings-card"><ul className="data-list notification-list">{notifications.map((notification) => { const link = canonicalNotificationPath(notification.link_path); return <li key={notification.id} className={notification.read_at ? "notification-item" : "notification-item unread"}><div><b>{notification.title}</b><small>{new Date(notification.created_at).toLocaleString()} · {notification.type}</small><p>{notification.body}</p>{link && <Link prefetch={false} className="text-button" href={link} onClick={(event) => { event.preventDefault(); navigatePath(link); }}>{L("查看相關內容", "View related content")}</Link>}</div>{!notification.read_at && <button type="button" className="secondary-action" onClick={() => onNotificationRead(notification.id)}>{L("標記已讀", "Mark read")}</button>}</li>; })}</ul>{!notifications.length && <p className="empty-copy">{L("目前沒有通知。", "There are no notifications yet.")}</p>}</div></section>;
 }
 
 function StudentCourses({ L, courses, units, materials, assignments, routePath, navigatePath, joinCourse }: { L: Translator; courses: CourseDto[]; units: UnitDto[]; materials: MaterialDto[]; assignments: AssignmentDto[]; routePath: string; navigatePath: (path: string) => void; joinCourse: (code: string) => Promise<void> }) {
@@ -718,10 +716,10 @@ function StudentCourses({ L, courses, units, materials, assignments, routePath, 
   return (
     <div className="student-centre-page course-browser">
       <div className="page-heading"><div><span className="grade-tag">{L("學生中心", "STUDENT CENTRE")}</span><h1>{selectedUnit ? languageText(selectedUnit.title_zh, selectedUnit.title_en, L) : selectedCourse ? languageText(selectedCourse.title_zh, selectedCourse.title_en, L) : L("我的課程", "My courses")}</h1><p>{L("依次選擇課程與單元，再開啟教材或課堂練習。", "Choose a course and unit, then open its material or classroom practice.")}</p></div></div>
-      <nav className="course-breadcrumbs" aria-label={L("課程層級", "Course hierarchy")}><Link href="/student/courses" aria-current={!courseId ? "page" : undefined}>{L("課程", "Courses")}</Link>{selectedCourse && <><span>›</span><Link href={`/student/courses/${encodeURIComponent(selectedCourse.id)}`} aria-current={!unitId ? "page" : undefined}>{languageText(selectedCourse.title_zh, selectedCourse.title_en, L)}</Link></>}{selectedUnit && <><span>›</span><b>{languageText(selectedUnit.title_zh, selectedUnit.title_en, L)}</b></>}</nav>
-      {!courseId && <><form className="join-course-form" onSubmit={submitJoin}><label>{L("加入課程代碼", "Course code")}<input aria-label={L("加入課程代碼", "Course code")} value={joinCode} onChange={(event) => setJoinCode(event.target.value.toUpperCase())} placeholder="ABC123" /></label><button type="submit" disabled={joining || !joinCode.trim()}>{joining ? L("加入中…", "Joining…") : L("加入課程", "Join course")}</button></form>{!courses.length ? <section className="empty-state"><h2>{L("目前沒有已加入的課程", "You are not enrolled in any course")}</h2><p>{L("請向教師索取課程代碼，或請教師把你的班別加入課程。", "Ask your teacher for a course code or have your class added to the course.")}</p></section> : <div className="course-grid">{courses.map((course, index) => <Link className="course-card course-select-card" key={course.id} href={`/student/courses/${encodeURIComponent(course.id)}`}><span className={["teal", "blue", "coral", "amber"][index % 4]}>{String(index + 1).padStart(2, "0")}</span><strong>{languageText(course.title_zh, course.title_en, L)}</strong><small>{units.filter((unit) => unit.course_id === course.id).length} {L("個單元", "units")} →</small></Link>)}</div>}</>}
-      {courseId && !unitId && <section className="unit-browser"><h2>{L("單元章節", "Course units")}</h2>{courseUnits.length ? <div className="data-list">{courseUnits.map((unit, index) => <Link className="data-row-button" key={unit.id} href={`/student/courses/${encodeURIComponent(courseId)}/units/${encodeURIComponent(unit.id)}`}><b>{index + 1}. {languageText(unit.title_zh, unit.title_en, L)}</b><small>{unit.description_zh ? languageText(unit.description_zh, unit.description_en, L) : L("開啟教材與練習", "Open materials and practice")}</small></Link>)}</div> : <section className="empty-state"><h2>{L("教師尚未發布單元", "No units published yet")}</h2></section>}</section>}
-      {selectedUnit && <div className="unit-learning-grid"><section><h2>{L("PPT 與教材", "PPT and materials")}</h2>{unitMaterials.length ? <div className="resource-list">{unitMaterials.map((material) => <article className="resource-card" key={material.id}><h3>{languageText(material.title_zh, material.title_en, L)}</h3><p>{material.file_name ?? material.kind}</p><MaterialPreview material={material} L={L} />{material.allow_download && material.file_name && <a className="download-link" href={learningApi.materialDownloadUrl(material.id)}>{L("下載原檔", "Download original")}</a>}</article>)}</div> : <p className="empty-copy">{L("此單元尚未發布教材。", "No material has been published in this unit.")}</p>}</section><section><h2>{L("課堂練習與功課", "Class practice and assignments")}</h2>{unitAssignments.length ? <div className="data-list">{unitAssignments.map((assignment) => <Link className={assignment.can_start === 0 ? "data-row-button disabled" : "data-row-button"} aria-disabled={assignment.can_start === 0} key={assignment.id} href={`/student/courses/${encodeURIComponent(courseId)}/assignments/${encodeURIComponent(assignment.id)}`}><b>{languageText(assignment.title_zh, assignment.title_en, L)}</b><small>{assignmentReminderLabel(assignment, L)}</small></Link>)}</div> : <p className="empty-copy">{L("此單元尚未發布練習。", "No practice has been published in this unit.")}</p>}</section></div>}
+      <nav className="course-breadcrumbs" aria-label={L("課程層級", "Course hierarchy")}><Link prefetch={false} href="/student/courses" aria-current={!courseId ? "page" : undefined} onClick={(event) => { event.preventDefault(); navigatePath("/student/courses"); }}>{L("課程", "Courses")}</Link>{selectedCourse && <><span>›</span><Link prefetch={false} href={`/student/courses/${encodeURIComponent(selectedCourse.id)}`} aria-current={!unitId ? "page" : undefined} onClick={(event) => { event.preventDefault(); navigatePath(`/student/courses/${encodeURIComponent(selectedCourse.id)}`); }}>{languageText(selectedCourse.title_zh, selectedCourse.title_en, L)}</Link></>}{selectedUnit && <><span>›</span><b>{languageText(selectedUnit.title_zh, selectedUnit.title_en, L)}</b></>}</nav>
+      {!courseId && <><form className="join-course-form" onSubmit={submitJoin}><label>{L("加入課程代碼", "Course code")}<input aria-label={L("加入課程代碼", "Course code")} value={joinCode} onChange={(event) => setJoinCode(event.target.value.toUpperCase())} placeholder="ABC123" /></label><button type="submit" disabled={joining || !joinCode.trim()}>{joining ? L("加入中…", "Joining…") : L("加入課程", "Join course")}</button></form>{!courses.length ? <section className="empty-state"><h2>{L("目前沒有已加入的課程", "You are not enrolled in any course")}</h2><p>{L("請向教師索取課程代碼，或請教師把你的班別加入課程。", "Ask your teacher for a course code or have your class added to the course.")}</p></section> : <div className="course-grid">{courses.map((course, index) => { const path = `/student/courses/${encodeURIComponent(course.id)}`; return <Link prefetch={false} className="course-card course-select-card" key={course.id} href={path} onClick={(event) => { event.preventDefault(); navigatePath(path); }}><span className={["teal", "blue", "coral", "amber"][index % 4]}>{String(index + 1).padStart(2, "0")}</span><strong>{languageText(course.title_zh, course.title_en, L)}</strong><small>{units.filter((unit) => unit.course_id === course.id).length} {L("個單元", "units")} →</small></Link>; })}</div>}</>}
+      {courseId && !unitId && <section className="unit-browser"><h2>{L("單元章節", "Course units")}</h2>{courseUnits.length ? <div className="data-list">{courseUnits.map((unit, index) => { const path = `/student/courses/${encodeURIComponent(courseId)}/units/${encodeURIComponent(unit.id)}`; return <Link prefetch={false} className="data-row-button" key={unit.id} href={path} onClick={(event) => { event.preventDefault(); navigatePath(path); }}><b>{index + 1}. {languageText(unit.title_zh, unit.title_en, L)}</b><small>{unit.description_zh ? languageText(unit.description_zh, unit.description_en, L) : L("開啟教材與練習", "Open materials and practice")}</small></Link>; })}</div> : <section className="empty-state"><h2>{L("教師尚未發布單元", "No units published yet")}</h2></section>}</section>}
+      {selectedUnit && <div className="unit-learning-grid"><section><h2>{L("PPT 與教材", "PPT and materials")}</h2>{unitMaterials.length ? <div className="resource-list">{unitMaterials.map((material) => <article className="resource-card" key={material.id}><h3>{languageText(material.title_zh, material.title_en, L)}</h3><p>{material.file_name ?? material.kind}</p><MaterialPreview material={material} L={L} />{material.allow_download && material.file_name && <a className="download-link" href={learningApi.materialDownloadUrl(material.id)}>{L("下載原檔", "Download original")}</a>}</article>)}</div> : <p className="empty-copy">{L("此單元尚未發布教材。", "No material has been published in this unit.")}</p>}</section><section><h2>{L("課堂練習與功課", "Class practice and assignments")}</h2>{unitAssignments.length ? <div className="data-list">{unitAssignments.map((assignment) => { const path = `/student/courses/${encodeURIComponent(courseId)}/assignments/${encodeURIComponent(assignment.id)}`; return <Link prefetch={false} className={assignment.can_start === 0 ? "data-row-button disabled" : "data-row-button"} aria-disabled={assignment.can_start === 0} key={assignment.id} href={path} onClick={(event) => { event.preventDefault(); if (assignment.can_start !== 0) navigatePath(path); }}><b>{languageText(assignment.title_zh, assignment.title_en, L)}</b><small>{assignmentReminderLabel(assignment, L)}</small></Link>; })}</div> : <p className="empty-copy">{L("此單元尚未發布練習。", "No practice has been published in this unit.")}</p>}</section></div>}
       <button type="button" className="secondary-action" onClick={() => navigatePath("/student/courses")}>{L("返回全部課程", "Back to all courses")} →</button>
     </div>
   );
@@ -2001,7 +1999,7 @@ function AdminCoursesCentre({ L }: { L: Translator }) {
   </div>;
 }
 
-function AdminSettingsCentre({ L, status, showToast }: { L: Translator; status: AdminStatusDto | null; showToast: (message: string) => void }) {
+function AdminSettingsCentre({ L, status, showToast, navigatePath }: { L: Translator; status: AdminStatusDto | null; showToast: (message: string) => void; navigatePath: (path: string) => void }) {
   const [settings, setSettings] = useState<GamificationSettingsDto | null>(null);
   const [error, setError] = useState("");
   async function refresh() { try { const result = await learningApi.gamificationSettings(); setSettings(result.settings); setError(""); } catch (caught) { setError(caught instanceof Error ? caught.message : L("系統設定載入失敗", "System settings could not be loaded")); } }
@@ -2013,7 +2011,7 @@ function AdminSettingsCentre({ L, status, showToast }: { L: Translator; status: 
     {error && <p role="alert" className="form-error">{error}</p>}
     <section className="admin-metrics"><MetricBlock label={L("AI 服務", "AI service")} value={status?.ai.configured ? L("已設定", "Configured") : L("未設定", "Not configured")} note={L("前往 AI 設定管理供應商", "Manage providers in AI settings")} tone="blue" /><MetricBlock label={L("備份", "Backups")} value={status?.backup.enabled ? L("已啟用", "Enabled") : L("已停用", "Disabled")} note={L("前往備份管理執行操作", "Open backup management for actions")} tone="amber" /><MetricBlock label={L("系統", "System")} value={L("正常", "Ready")} note={L("後端健康狀態已驗證", "Backend health has been verified")} tone="coral" /></section>
     <section className="settings-card"><h2>{L("學習功能開關", "Learning feature switches")}</h2>{rows.length === 0 ? <p className="empty-copy">{L("正在載入設定…", "Loading settings…")}</p> : <div className="policy-list">{rows.map((row) => <PolicyRow key={row.key} icon="◉" title={L(row.titleZh, row.titleEn)} note={row.value ? L("已啟用", "Enabled") : L("已停用", "Disabled")} toggle={Boolean(row.value)} onToggle={() => void update(row.key, !row.value)} />)}</div>}</section>
-    <section className="settings-card"><h2>{L("管理入口", "Management entry points")}</h2><div className="admin-link-grid"><Link href="/admin/settings/ai">{L("AI 設定", "AI settings")}</Link><Link href="/admin/backups">{L("備份管理", "Backup management")}</Link><Link href="/admin/audit">{L("稽核紀錄", "Audit logs")}</Link><Link href="/admin/email">{L("Email Outbox", "Email Outbox")}</Link></div></section>
+    <section className="settings-card"><h2>{L("管理入口", "Management entry points")}</h2><div className="admin-link-grid">{[["/admin/settings/ai", L("AI 設定", "AI settings")], ["/admin/backups", L("備份管理", "Backup management")], ["/admin/audit", L("稽核紀錄", "Audit logs")], ["/admin/email", L("Email Outbox", "Email Outbox")]].map(([path, label]) => <Link prefetch={false} key={path} href={path} onClick={(event) => { event.preventDefault(); navigatePath(path); }}>{label}</Link>)}</div></section>
   </div>;
 }
 

@@ -1,0 +1,50 @@
+c2c_b84d navigation and functional evidence
+Date: 2026-09-22 Asia/Hong_Kong
+
+Initial reproduction
+- Top/side navigation could change focus or URL without synchronizing the rendered section.
+- Student missions/practice/resources and teacher materials/assessment shared fallback URLs.
+- Internal course/unit/assignment links did not navigate in the deployed vinext client.
+- Gateway forwarded browser zstd negotiation through Undici and could return undecodable/stale compressed content.
+
+Implemented controls
+- Added canonical static routes for every rendered top-level section.
+- Centralized route-to-section lookup and synchronous view update before router push.
+- Routed every internal portal Link through navigatePath and disabled unused vinext prefetch.
+- Added most-specific active-route selection for nested routes.
+- Added role-safe post-login fallback to the authenticated role home.
+- Normalized Gateway upstream Accept-Encoding to gzip/deflate and stripped decoded/hop-by-hop response headers.
+
+Automated verification
+- Targeted navigation/gateway/routing tests: 27 passed, 0 failed.
+- TypeScript: npx tsc --noEmit => PASS.
+- Changed-file ESLint => PASS.
+- Full suite: 139 tests; 137 passed, 0 failed, 2 skipped (PPTX_FIXTURE_PATH not configured).
+- Production vinext build in Docker => PASS; all 37 portal routes emitted.
+
+Fresh Compose end-to-end verification
+- Fresh project: phase11-finaltest-20260922, port 3333, isolated volumes.
+- Result: PASS.
+- Flow: admin -> teacher/student -> publish -> Runner grade -> submit -> teacher release -> student result.
+- Static portal pages: 27/27.
+- Dynamic portal pages: 10/10.
+- XLSX export bytes: 18285.
+- Backup/checksum and audit: PASS.
+- Hidden canary exposed: false.
+- CSRF, wrong-role and method boundaries: PASS.
+- Test-only containers and volumes removed after verification.
+
+Browser verification
+- Student top-level pages: 7/7.
+- Teacher top-level pages: 11/11.
+- Admin top-level pages: 9/9.
+- Student course -> unit -> assignment -> practice deep-link flow: PASS.
+- Browser Back, Forward and Reload: PASS.
+- Nested sidebar highlight: PASS.
+- Final fresh-tab console errors: none.
+
+Deployment
+- Updated phase11-deploy-20260921 at http://127.0.0.1:3331.
+- Existing persistent volumes retained.
+- Six services healthy; gateway /health returned status=ok.
+- Final 3331 login page rendered in browser with no console errors.

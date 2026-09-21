@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import http from "node:http";
 import test from "node:test";
+import { gzipSync } from "node:zlib";
 
 const { createGatewayServer, portalRoleForPath } = await import("../gateway/server.mjs");
 const { PORTAL_ROUTES } = await import("../app/lib/portal-routes.ts");
@@ -20,7 +21,7 @@ async function responseSnapshot(response) {
   return { status: response.status, headers: response.headers, body: await response.text() };
 }
 
-async function createHarness({ meStatus = 200, identity = { user: { id: "u-1", role: "teacher" } }, meBody, backendUnavailable = false } = {}) {
+async function createHarness({ meStatus = 200, identity = { user: { id: "u-1", role: "teacher" } }, meBody, backendUnavailable = false, compressedWeb = false } = {}) {
   const backendCalls = [];
   const webCalls = [];
   const backend = http.createServer((request, response) => {
@@ -50,9 +51,17 @@ async function createHarness({ meStatus = 200, identity = { user: { id: "u-1", r
       path: request.url,
       token: request.headers["x-backend-token"],
       requestId: request.headers["x-request-id"],
+      acceptEncoding: request.headers["accept-encoding"],
     });
-    response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-    response.end("<!doctype html><title>stub web</title>");
+    const body = Buffer.from("<!doctype html><title>stub web</title>");
+    if (compressedWeb) {
+      const compressed = gzipSync(body);
+      response.writeHead(200, { "content-type": "text/html; charset=utf-8", "content-encoding": "gzip", "content-length": compressed.byteLength, connection: "keep-alive" });
+      response.end(compressed);
+      return;
+    }
+    response.writeHead(200, { "content-type": "text/html; charset=utf-8", "content-length": body.byteLength });
+    response.end(body);
   });
   const backendPort = await listen(backend);
   const webPort = await listen(web);
@@ -145,6 +154,20 @@ test("teacher page is forwarded after probe and private token stays off web", as
     assert.equal(harness.webCalls[0].path, "/teacher/courses/course-1");
     assert.equal(harness.webCalls[0].token, undefined);
     assert.equal(harness.webCalls[0].requestId, "teacher-page-request");
+  } finally {
+    await harness.close();
+  }
+});
+
+test("gateway removes stale compression and hop-by-hop headers after fetch decompression", async () => {
+  const harness = await createHarness({ compressedWeb: true });
+  try {
+    const response = await fetch(`${harness.base}/teacher/dashboard`, { headers: { cookie: SESSION_COOKIE, "accept-encoding": "gzip, deflate, br, zstd" } });
+    assert.equal(response.status, 200);
+    assert.equal(await response.text(), "<!doctype html><title>stub web</title>");
+    assert.equal(response.headers.get("content-encoding"), null);
+    assert.equal(response.headers.get("connection"), "keep-alive");
+    assert.equal(harness.webCalls[0].acceptEncoding, "gzip, deflate");
   } finally {
     await harness.close();
   }

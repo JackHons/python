@@ -17,11 +17,11 @@ test("canonical role routes are real files with stable deep-link contracts", asy
     "app/student/dashboard/page.tsx", "app/student/courses/page.tsx", "app/student/courses/[courseId]/page.tsx",
     "app/student/courses/[courseId]/units/[unitId]/page.tsx", "app/student/courses/[courseId]/assignments/[assignmentId]/page.tsx",
     "app/student/practice/[submissionId]/page.tsx", "app/student/classrooms/page.tsx", "app/student/classrooms/[sessionId]/page.tsx",
-    "app/student/notifications/page.tsx",
+    "app/student/notifications/page.tsx", "app/student/missions/page.tsx", "app/student/practice/page.tsx", "app/student/resources/page.tsx",
     "app/teacher/dashboard/page.tsx", "app/teacher/courses/page.tsx", "app/teacher/courses/[courseId]/page.tsx",
     "app/teacher/courses/[courseId]/units/[unitId]/materials/page.tsx", "app/teacher/classes/page.tsx", "app/teacher/classes/[classId]/page.tsx",
     "app/teacher/assignments/[assignmentId]/submissions/page.tsx", "app/teacher/classrooms/page.tsx", "app/teacher/classrooms/[sessionId]/page.tsx",
-    "app/teacher/announcements/page.tsx", "app/teacher/exports/page.tsx",
+    "app/teacher/announcements/page.tsx", "app/teacher/exports/page.tsx", "app/teacher/materials/page.tsx", "app/teacher/assessment/page.tsx",
     "app/teacher/analytics/page.tsx", "app/teacher/analytics/ai/page.tsx", "app/teacher/ai-review/page.tsx",
     "app/admin/dashboard/page.tsx", "app/admin/users/page.tsx", "app/admin/classes/page.tsx", "app/admin/courses/page.tsx",
     "app/admin/settings/ai/page.tsx", "app/admin/settings/page.tsx", "app/admin/backups/page.tsx", "app/admin/audit/page.tsx",
@@ -43,8 +43,8 @@ test("canonical role routes are real files with stable deep-link contracts", asy
   assert.match(page, /router\.push\(path\)/);
   assert.match(page, /function StudentNotifications/);
   assert.match(page, /learningApi\.markNotificationRead/);
-  assert.match(page, /announcements: "\/teacher\/announcements"/);
-  assert.match(page, /exports: "\/teacher\/exports"/);
+  assert.match(page, /portalPathForSection\("teacher", item\.key\)/);
+  assert.match(page, /portalPathForSection\("student", item\.key\)/);
   assert.match(page, /canonicalNotificationPath/);
   assert.match(page, /updateEmailSettings/);
   assert.match(page, /cancelEmail/);

@@ -38,6 +38,19 @@ async function login(target, username, password) {
   return api("/auth/login", { method: "POST", body: { username, password }, session: target });
 }
 
+async function portalPage(path, roleSession, expected = 200) {
+  const response = await fetch(`${baseUrl}${path}`, {
+    headers: roleSession.cookie ? { cookie: roleSession.cookie } : {},
+    redirect: "manual",
+  });
+  assert.equal(response.status, expected, `GET ${path} expected ${expected}, got ${response.status}`);
+  if (expected === 200) assert.match(response.headers.get("content-type") ?? "", /text\/html/);
+}
+
+async function verifyPortalPages(paths, roleSession) {
+  for (const path of paths) await portalPage(path, roleSession);
+}
+
 async function firstLogin(username, password, nextPassword) {
   const first = session();
   await login(first, username, password);
@@ -75,6 +88,23 @@ const studentCreated = (await api("/admin/users", { method: "POST", body: { role
 const teacher = await firstLogin(teacherUsername, teacherCreated.initialPassword, teacherPassword);
 const student = await firstLogin(studentUsername, studentCreated.initialPassword, studentPassword);
 
+await verifyPortalPages([
+  "/admin/dashboard", "/admin/users", "/admin/classes", "/admin/courses", "/admin/settings/ai",
+  "/admin/settings", "/admin/backups", "/admin/audit", "/admin/email",
+], admin);
+await verifyPortalPages([
+  "/teacher/dashboard", "/teacher/courses", "/teacher/materials", "/teacher/classes",
+  "/teacher/announcements", "/teacher/exports", "/teacher/assessment", "/teacher/classrooms",
+  "/teacher/analytics", "/teacher/analytics/ai", "/teacher/ai-review",
+], teacher);
+await verifyPortalPages([
+  "/student/dashboard", "/student/courses", "/student/notifications", "/student/missions",
+  "/student/practice", "/student/resources", "/student/classrooms",
+], student);
+await portalPage("/admin/dashboard", student, 403);
+await portalPage("/teacher/dashboard", student, 403);
+await portalPage("/student/dashboard", teacher, 403);
+
 const classData = (await api("/classes", { method: "POST", body: { name: `Compose 班 ${stamp}`, academicYear: "2026" }, session: teacher, expected: 201 })).data.class;
 await api(`/classes/${classData.id}/members`, { method: "POST", body: { userId: studentCreated.user.id }, session: teacher, expected: 201 });
 const course = (await api("/courses", { method: "POST", body: { titleZh: `Compose Python ${stamp}`, titleEn: "Compose Python", joinCode: `PY-${stamp}` }, session: teacher, expected: 201 })).data.course;
@@ -94,11 +124,26 @@ const assignment = (await api("/assignments", { method: "POST", body: { courseId
 await api(`/assignments/${assignment.id}/questions`, { method: "POST", body: { questionId: question.id }, session: teacher, expected: 201 });
 await api(`/assignments/${assignment.id}`, { method: "PATCH", body: { status: "published" }, session: teacher });
 
+await verifyPortalPages([
+  `/teacher/courses/${course.id}`,
+  `/teacher/courses/${course.id}/units/${unit.id}/materials`,
+  `/teacher/classes/${classData.id}`,
+  `/teacher/assignments/${assignment.id}/submissions`,
+  "/teacher/classrooms/route-smoke-session",
+], teacher);
+await verifyPortalPages([
+  `/student/courses/${course.id}`,
+  `/student/courses/${course.id}/units/${unit.id}`,
+  `/student/courses/${course.id}/assignments/${assignment.id}`,
+  "/student/classrooms/route-smoke-session",
+], student);
+
 const studentCourses = (await api("/courses", { session: student })).data.courses;
 assert.equal(studentCourses.length, 1);
 const studentAssignments = (await api(`/courses/${course.id}/assignments`, { session: student })).data.assignments;
 assert.equal(studentAssignments.length, 1);
 const submission = (await api(`/assignments/${assignment.id}/submissions`, { method: "POST", body: {}, session: student, expected: 201 })).data.submission;
+await portalPage(`/student/practice/${submission.id}`, student);
 const answer = submission.answers[0];
 await api(`/submission-answers/${answer.id}/snapshots`, { method: "POST", body: { code: "print('ok')", source: "autosave" }, session: student, expected: 201 });
 await api(`/submissions/${submission.id}/answers/${answer.questionId}`, { method: "PATCH", body: { answerText: "print('ok')" }, session: student });
@@ -153,6 +198,8 @@ console.log(JSON.stringify({
   hiddenCanaryExposed: false,
   csrfBoundary: evil.response.status === 403,
   wrongRoleBoundary: true,
+  staticPortalPages: 27,
+  dynamicPortalPages: 10,
   methodBoundary: wrongMethod.response.status === 405,
   restartPersistence: restartServices,
 }, null, 2));

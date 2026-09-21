@@ -12,12 +12,17 @@ export const PORTAL_ROUTES: PortalRoute[] = [
   { path: "/student/dashboard", role: "student", labelZh: "首頁", labelEn: "Dashboard", section: "home" },
   { path: "/student/courses", role: "student", labelZh: "課程", labelEn: "Courses", section: "courses" },
   { path: "/student/notifications", role: "student", labelZh: "通知", labelEn: "Notifications", section: "notifications" },
+  { path: "/student/missions", role: "student", labelZh: "學習任務", labelEn: "Missions", section: "missions" },
+  { path: "/student/practice", role: "student", labelZh: "練習場", labelEn: "Practice", section: "practice" },
+  { path: "/student/resources", role: "student", labelZh: "資源", labelEn: "Resources", section: "resources" },
   { path: "/student/classrooms", role: "student", labelZh: "即時課堂", labelEn: "Live classrooms", section: "classrooms" },
   { path: "/teacher/dashboard", role: "teacher", labelZh: "教師首頁", labelEn: "Dashboard", section: "dashboard" },
   { path: "/teacher/courses", role: "teacher", labelZh: "課程內容", labelEn: "Courses", section: "content" },
+  { path: "/teacher/materials", role: "teacher", labelZh: "教材庫", labelEn: "Materials", section: "materials" },
   { path: "/teacher/classes", role: "teacher", labelZh: "班別學生", labelEn: "Classes", section: "classes" },
   { path: "/teacher/announcements", role: "teacher", labelZh: "公告通知", labelEn: "Announcements", section: "announcements" },
   { path: "/teacher/exports", role: "teacher", labelZh: "匯出中心", labelEn: "Export centre", section: "exports" },
+  { path: "/teacher/assessment", role: "teacher", labelZh: "功課批改", labelEn: "Assessment", section: "assessment" },
   { path: "/teacher/classrooms", role: "teacher", labelZh: "即時課堂", labelEn: "Live classrooms", section: "classrooms" },
   { path: "/teacher/analytics", role: "teacher", labelZh: "學習分析", labelEn: "Analytics", section: "dashboard" },
   { path: "/teacher/analytics/ai", role: "teacher", labelZh: "AI 用量分析", labelEn: "AI analytics", section: "analytics-ai" },
@@ -48,6 +53,22 @@ const DYNAMIC_ROUTES: Array<{ pattern: RegExp; role: PortalRole; section: string
 
 export function roleHome(role: PortalRole) {
   return `/${role}/dashboard`;
+}
+
+export function portalPathForSection(role: PortalRole, section: string) {
+  return PORTAL_ROUTES.find((route) => route.role === role && route.section === section)?.path ?? roleHome(role);
+}
+
+export function isPortalRouteActive(routePath: string, route: PortalRoute) {
+  if (routePath === route.path) return true;
+  if (route.path === roleHome(route.role) || !routePath.startsWith(route.path + "/")) return false;
+  return !PORTAL_ROUTES.some(
+    (candidate) =>
+      candidate.role === route.role &&
+      candidate.path !== route.path &&
+      candidate.path.startsWith(route.path + "/") &&
+      (routePath === candidate.path || routePath.startsWith(candidate.path + "/")),
+  );
 }
 
 export function resolvePortalPath(pathname: string): { role: PortalRole; section: string; params: string[] } | null {

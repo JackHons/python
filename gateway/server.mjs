@@ -6,6 +6,18 @@ import { randomUUID } from "node:crypto";
 const MUTATION_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 const PORTAL_ROLES = new Map([["/student", "student"], ["/teacher", "teacher"], ["/admin", "admin"]]);
 const VALID_ROLES = new Set(PORTAL_ROLES.values());
+const STRIPPED_UPSTREAM_HEADERS = new Set([
+  "connection",
+  "content-encoding",
+  "content-length",
+  "keep-alive",
+  "proxy-authenticate",
+  "proxy-authorization",
+  "te",
+  "trailer",
+  "transfer-encoding",
+  "upgrade",
+]);
 
 function isApiPath(pathname) {
   return pathname === "/api/v1" || pathname.startsWith("/api/v1/");
@@ -20,7 +32,8 @@ export function portalRoleForPath(pathname) {
 function headerRecord(headers) {
   const result = {};
   headers.forEach((value, key) => {
-    if (key.toLowerCase() !== "set-cookie") result[key] = value;
+    const normalized = key.toLowerCase();
+    if (normalized !== "set-cookie" && !STRIPPED_UPSTREAM_HEADERS.has(normalized)) result[key] = value;
   });
   const getSetCookie = headers.getSetCookie?.bind(headers);
   const cookies = getSetCookie?.() ?? [];
@@ -131,6 +144,10 @@ export function createGatewayServer(options = {}) {
   headers.delete("host");
   headers.delete("content-length");
   headers.delete("x-backend-token");
+  // Undici transparently decodes gzip/deflate responses but not every encoding
+  // modern browsers advertise (notably zstd).  Keep the upstream negotiation
+  // to encodings the proxy can decode before stripping Content-Encoding.
+  headers.set("accept-encoding", "gzip, deflate");
   headers.set("x-request-id", requestId);
   if (api) {
     headers.set("x-backend-token", backendToken);
