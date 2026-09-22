@@ -1,0 +1,23 @@
+Runner Isolation Slice A evidence
+Date: 2026-09-22
+
+Scope
+- Server-owned isolation policy with local_process and reserved strong_external modes.
+- RUNNER_REQUIRE_STRONG_ISOLATION fails readiness and execution closed when a verified strong executor is unavailable.
+- HTTP execute requests cannot select or override the isolation mode.
+- Child process environment uses a positive allowlist and excludes service, backend, AI, SMTP, and runner secrets.
+- Windows-compatible output collection, stdin handling, timeout, process-tree cleanup, and bounded output are covered.
+
+Verification
+- Python runner tests: 21 passed.
+- Phase 3 tests: 9 passed.
+- Full Node suite: 137 passed, 0 failed, 2 skipped because the optional real PPTX fixture was not configured.
+- Phase 8 host runner smoke: passed; 10 successful responses and 30 bounded-queue responses in the current run.
+- Phase 8 security scan: 11 passed, 0 failed.
+- TypeScript check: passed.
+- ESLint: passed.
+- Production build: passed.
+
+Known boundary
+- The overall P0 remains open. The local_process mode is explicitly weak and does not claim kernel, egress, cgroup, or disposable-runtime isolation.
+- Isolated Compose build was attempted with a fresh project name but was blocked by a local Docker Desktop gRPC session-header error before service creation; no production project was touched.

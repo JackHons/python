@@ -19,6 +19,7 @@ import subprocess
 import sys
 import sysconfig
 import tempfile
+import threading
 import time
 from dataclasses import dataclass
 from http import HTTPStatus
@@ -65,6 +66,20 @@ FORBIDDEN_CALLS = {
     "system",
 }
 SUPPORTED_PACKAGES = {"numpy", "pandas", "matplotlib"}
+ISOLATION_MODE_LOCAL_PROCESS = "local_process"
+ISOLATION_MODE_STRONG_EXTERNAL = "strong_external"
+ISOLATION_MODES = frozenset({ISOLATION_MODE_LOCAL_PROCESS, ISOLATION_MODE_STRONG_EXTERNAL})
+EXECUTE_REQUEST_FIELDS = frozenset({"code", "stdin", "timeout_ms", "allowed_packages"})
+SECRET_ENV_NAMES = frozenset(
+    {
+        "RUNNER_SERVICE_TOKEN",
+        "PYTHON_RUNNER_TOKEN",
+        "BACKEND_INTERNAL_TOKEN",
+        "AI_MASTER_KEY",
+        "SMTP_PASSWORD",
+        "SMTP_USERNAME",
+    }
+)
 
 
 def _path_is_within(path: Path, root: Path) -> bool:
@@ -183,9 +198,18 @@ class Settings:
     drop_privileges: bool
     request_timeout_ms: int
     service_token: str
+    isolation_mode: str
+    require_strong_isolation: bool
 
     @classmethod
     def from_env(cls) -> "Settings":
+        isolation_mode = os.environ.get(
+            "RUNNER_ISOLATION_MODE", ISOLATION_MODE_LOCAL_PROCESS
+        ).strip().lower()
+        if isolation_mode not in ISOLATION_MODES:
+            allowed = ", ".join(sorted(ISOLATION_MODES))
+            raise RuntimeError(f"RUNNER_ISOLATION_MODE must be one of: {allowed}")
+        require_strong_isolation = _env_bool("RUNNER_REQUIRE_STRONG_ISOLATION", False)
         max_timeout_ms = _env_int("RUNNER_MAX_TIMEOUT_MS", 5000, 100)
         default_timeout_ms = min(
             _env_int("RUNNER_DEFAULT_TIMEOUT_MS", 3000, 100), max_timeout_ms
@@ -211,6 +235,8 @@ class Settings:
             drop_privileges=_env_bool("RUNNER_DROP_PRIVILEGES", True),
             request_timeout_ms=_env_int("RUNNER_REQUEST_TIMEOUT_MS", 3000, 250),
             service_token=service_token,
+            isolation_mode=isolation_mode,
+            require_strong_isolation=require_strong_isolation,
         )
 
 
@@ -235,6 +261,34 @@ class RequestError(Exception):
 
 class CodePolicyError(ValueError):
     """The submitted source requests a capability outside the runner policy."""
+
+
+class RunnerNotReady(RuntimeError):
+    """The configured isolation policy cannot safely execute a job."""
+
+
+@dataclass(frozen=True)
+class IsolationPolicy:
+    """Server-owned isolation policy and the verified executor facts."""
+
+    mode: str
+    require_strong: bool
+    executor_available: bool
+    strong_executor_verified: bool
+
+    @property
+    def strong_required(self) -> bool:
+        return self.require_strong or self.mode == ISOLATION_MODE_STRONG_EXTERNAL
+
+    @property
+    def ready(self) -> bool:
+        if self.mode == ISOLATION_MODE_LOCAL_PROCESS:
+            return self.executor_available and not self.require_strong
+        return (
+            self.executor_available
+            and self.strong_executor_verified
+            and self.strong_required
+        )
 
 
 def validate_allowed_packages(value: Any) -> tuple[str, ...]:
@@ -275,10 +329,13 @@ def validate_code_policy(code: str, allowed_packages: tuple[str, ...] = ()) -> N
 
 def _kill_process_group(process: subprocess.Popen[bytes]) -> None:
     try:
-        os.killpg(process.pid, signal.SIGKILL)
+        if hasattr(os, "killpg"):
+            os.killpg(process.pid, signal.SIGKILL)
+        elif process.poll() is None:
+            process.kill()
     except ProcessLookupError:
         pass
-    except PermissionError:
+    except (AttributeError, PermissionError, OSError):
         # Some host Python builds cannot signal a newly-created process group.
         # The Linux container retains CAP_KILL so the group path is used there;
         # killing the direct child keeps host-only tests deterministic.
@@ -289,9 +346,98 @@ def _kill_process_group(process: subprocess.Popen[bytes]) -> None:
             pass
 
 
+def _collect_output_with_threads(
+    process: subprocess.Popen[bytes], timeout_ms: int, max_output_bytes: int
+) -> tuple[bytes, bytes, bool, bool]:
+    """Bounded pipe collection for Windows, where selectors cannot read pipes."""
+    assert process.stdout is not None
+    assert process.stderr is not None
+    events: queue.Queue[tuple[str, bytes | None]] = queue.Queue()
+    stop_readers = threading.Event()
+
+    def read_stream(name: str, stream: Any) -> None:
+        try:
+            while not stop_readers.is_set():
+                try:
+                    chunk = stream.read(8192)
+                except (OSError, ValueError):
+                    break
+                if not chunk:
+                    break
+                events.put((name, chunk))
+        finally:
+            events.put((name, None))
+
+    readers = [
+        threading.Thread(target=read_stream, args=("stdout", process.stdout), daemon=True),
+        threading.Thread(target=read_stream, args=("stderr", process.stderr), daemon=True),
+    ]
+    for reader in readers:
+        reader.start()
+
+    output = {"stdout": bytearray(), "stderr": bytearray()}
+    total = 0
+    open_streams = len(readers)
+    deadline = time.monotonic() + timeout_ms / 1000
+    termination_deadline: float | None = None
+    timed_out = False
+    output_limited = False
+
+    try:
+        while open_streams:
+            now = time.monotonic()
+            if now >= deadline and not timed_out:
+                timed_out = True
+                _kill_process_group(process)
+                stop_readers.set()
+                termination_deadline = now + 0.25
+
+            if termination_deadline is not None and now >= termination_deadline:
+                break
+
+            next_deadline = termination_deadline or deadline
+            try:
+                name, chunk = events.get(timeout=max(0, min(0.05, next_deadline - now)))
+            except queue.Empty:
+                continue
+            if chunk is None:
+                open_streams -= 1
+                continue
+
+            available = max_output_bytes - total
+            if available > 0:
+                output[name].extend(chunk[:available])
+                total += min(len(chunk), available)
+            if len(chunk) > available:
+                output_limited = True
+                stop_readers.set()
+                _kill_process_group(process)
+                termination_deadline = termination_deadline or time.monotonic() + 0.25
+    finally:
+        stop_readers.set()
+        if timed_out or output_limited:
+            _kill_process_group(process)
+        for stream in (process.stdout, process.stderr):
+            try:
+                stream.close()
+            except (OSError, ValueError):
+                pass
+        try:
+            process.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            _kill_process_group(process)
+            process.wait(timeout=1)
+        for reader in readers:
+            reader.join(timeout=1)
+
+    return bytes(output["stdout"]), bytes(output["stderr"]), timed_out, output_limited
+
+
 def _collect_output(
     process: subprocess.Popen[bytes], timeout_ms: int, max_output_bytes: int
 ) -> tuple[bytes, bytes, bool, bool]:
+    if os.name == "nt":
+        return _collect_output_with_threads(process, timeout_ms, max_output_bytes)
     selector = selectors.DefaultSelector()
     assert process.stdout is not None
     assert process.stderr is not None
@@ -352,7 +498,33 @@ def _collect_output(
     return bytes(output["stdout"]), bytes(output["stderr"]), timed_out, output_limited
 
 
-def execute_python(
+def build_child_env(settings: Settings, scratch_path: Path, timeout_ms: int) -> dict[str, str]:
+    """Build a positive-allowlist environment for student code."""
+    child_env = {
+        "HOME": str(scratch_path),
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
+        "MPLBACKEND": "Agg",
+        "MPLCONFIGDIR": str(scratch_path / ".matplotlib"),
+        "OPENBLAS_NUM_THREADS": "1",
+        "OMP_NUM_THREADS": "1",
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONUNBUFFERED": "1",
+        "TMPDIR": str(scratch_path),
+        "XDG_CACHE_HOME": str(scratch_path / ".cache"),
+        "RUNNER_CHILD_CPU_MS": str(timeout_ms),
+        "RUNNER_CHILD_MEMORY_BYTES": str(settings.memory_bytes),
+        "RUNNER_CHILD_FILE_BYTES": str(settings.max_file_bytes),
+        "RUNNER_CHILD_PROCESS_COUNT": str(settings.child_process_count),
+    }
+    if SECRET_ENV_NAMES.intersection(child_env):
+        raise RuntimeError("secret environment names are not allowed in child environment")
+    return child_env
+
+
+def _execute_python_local(
+    settings: Settings,
     code: str,
     stdin_text: str,
     timeout_ms: int,
@@ -362,15 +534,16 @@ def execute_python(
 ) -> dict[str, Any]:
     validate_code_policy(code, allowed_packages)
     started = time.monotonic()
-    child_uid = sandbox_uid if sandbox_uid is not None else SETTINGS.sandbox_uid
-    child_gid = sandbox_gid if sandbox_gid is not None else SETTINGS.sandbox_gid
+    child_uid = sandbox_uid if sandbox_uid is not None else settings.sandbox_uid
+    child_gid = sandbox_gid if sandbox_gid is not None else settings.sandbox_gid
     with tempfile.TemporaryDirectory(prefix="python-job-") as temp_dir_name:
         temp_dir = Path(temp_dir_name)
         script_path = temp_dir / "main.py"
         stdin_path = temp_dir / "stdin.txt"
         scratch_path = temp_dir / "scratch"
         script_path.write_text(code, encoding="utf-8")
-        stdin_path.write_text(stdin_text, encoding="utf-8")
+        with stdin_path.open("w", encoding="utf-8", newline="") as stdin_file:
+            stdin_file.write(stdin_text)
         scratch_path.mkdir(mode=0o700)
 
         os.chmod(temp_dir, 0o711)
@@ -378,8 +551,8 @@ def execute_python(
         os.chmod(stdin_path, 0o400)
 
         command = [sys.executable, "-I", str(WRAPPER), str(script_path)]
-        if SETTINGS.drop_privileges:
-            if os.geteuid() != 0:
+        if settings.drop_privileges:
+            if not hasattr(os, "geteuid") or os.geteuid() != 0:
                 raise RuntimeError("privilege dropping requires the runner service to start as root")
             os.chown(script_path, child_uid, child_gid)
             os.chown(scratch_path, child_uid, child_gid)
@@ -392,24 +565,7 @@ def execute_python(
                 *command,
             ]
 
-        child_env = {
-            "HOME": str(scratch_path),
-            "LANG": "C.UTF-8",
-            "LC_ALL": "C.UTF-8",
-            "MPLBACKEND": "Agg",
-            "MPLCONFIGDIR": str(scratch_path / ".matplotlib"),
-            "OPENBLAS_NUM_THREADS": "1",
-            "OMP_NUM_THREADS": "1",
-            "PATH": "/usr/local/bin:/usr/bin:/bin",
-            "PYTHONDONTWRITEBYTECODE": "1",
-            "PYTHONUNBUFFERED": "1",
-            "TMPDIR": str(scratch_path),
-            "XDG_CACHE_HOME": str(scratch_path / ".cache"),
-            "RUNNER_CHILD_CPU_MS": str(timeout_ms),
-            "RUNNER_CHILD_MEMORY_BYTES": str(SETTINGS.memory_bytes),
-            "RUNNER_CHILD_FILE_BYTES": str(SETTINGS.max_file_bytes),
-            "RUNNER_CHILD_PROCESS_COUNT": str(SETTINGS.child_process_count),
-        }
+        child_env = build_child_env(settings, scratch_path, timeout_ms)
 
         with stdin_path.open("rb") as stdin_file:
             process = subprocess.Popen(
@@ -423,17 +579,139 @@ def execute_python(
                 start_new_session=True,
             )
             stdout, stderr, timed_out, output_limited = _collect_output(
-                process, timeout_ms, SETTINGS.max_output_bytes
+                process, timeout_ms, settings.max_output_bytes
             )
 
     return {
-        "stdout": stdout.decode("utf-8", errors="replace"),
-        "stderr": stderr.decode("utf-8", errors="replace"),
+        # The public runner protocol uses LF regardless of the host OS.
+        "stdout": stdout.decode("utf-8", errors="replace").replace("\r\n", "\n"),
+        "stderr": stderr.decode("utf-8", errors="replace").replace("\r\n", "\n"),
         "exit_code": process.returncode,
         "timed_out": timed_out,
         "output_limited": output_limited,
         "duration_ms": round((time.monotonic() - started) * 1000),
     }
+
+
+class LocalProcessExecutor:
+    """The bounded but weak local process executor used for local/internal runs."""
+
+    mode = ISOLATION_MODE_LOCAL_PROCESS
+    available = True
+    strong_verified = False
+
+    def __init__(self, settings: Settings) -> None:
+        self.settings = settings
+
+    def execute(
+        self,
+        code: str,
+        stdin_text: str,
+        timeout_ms: int,
+        sandbox_uid: int | None = None,
+        sandbox_gid: int | None = None,
+        allowed_packages: tuple[str, ...] = (),
+    ) -> dict[str, Any]:
+        return _execute_python_local(
+            self.settings,
+            code,
+            stdin_text,
+            timeout_ms,
+            sandbox_uid,
+            sandbox_gid,
+            allowed_packages,
+        )
+
+
+class StrongExternalExecutor:
+    """Reserved adapter: no verified strong launcher is bundled in Slice A."""
+
+    mode = ISOLATION_MODE_STRONG_EXTERNAL
+    available = False
+    strong_verified = False
+
+    def execute(
+        self,
+        code: str,
+        stdin_text: str,
+        timeout_ms: int,
+        sandbox_uid: int | None = None,
+        sandbox_gid: int | None = None,
+        allowed_packages: tuple[str, ...] = (),
+    ) -> dict[str, Any]:
+        del code, stdin_text, timeout_ms, sandbox_uid, sandbox_gid, allowed_packages
+        raise RunnerNotReady("strong_external executor is not configured")
+
+
+def create_executor(settings: Settings) -> LocalProcessExecutor | StrongExternalExecutor:
+    """Select exactly the configured executor; never silently fall back."""
+    if settings.isolation_mode == ISOLATION_MODE_LOCAL_PROCESS:
+        return LocalProcessExecutor(settings)
+    return StrongExternalExecutor()
+
+
+RUNNER_EXECUTOR = create_executor(SETTINGS)
+
+
+def runner_capabilities(
+    settings: Settings | None = None,
+    executor: LocalProcessExecutor | StrongExternalExecutor | None = None,
+) -> dict[str, Any]:
+    current_settings = settings or SETTINGS
+    current_executor = executor or RUNNER_EXECUTOR
+    policy = IsolationPolicy(
+        mode=current_settings.isolation_mode,
+        require_strong=current_settings.require_strong_isolation,
+        executor_available=current_executor.available,
+        strong_executor_verified=current_executor.strong_verified,
+    )
+    strength = "weak" if current_settings.isolation_mode == ISOLATION_MODE_LOCAL_PROCESS else "unverified"
+    return {
+        "status": "ok" if policy.ready else "not_ready",
+        "ready": policy.ready,
+        "isolation": {
+            "mode": policy.mode,
+            "strength": strength,
+            "strong_required": policy.strong_required,
+            "strong_verified": policy.strong_executor_verified,
+            "executor_available": policy.executor_available,
+            "fallback_used": False,
+        },
+        "capabilities": {
+            "per_job_workspace": True,
+            "workspace_cleanup": True,
+            "process_tree_cleanup": True,
+            "resource_limits": True,
+            "ast_capability_policy": True,
+            "network_policy": "ast_only",
+            "egress_isolation": False,
+            "strong_sandbox": policy.strong_executor_verified,
+        },
+    }
+
+
+def _require_runner_ready() -> None:
+    if not runner_capabilities()["ready"]:
+        raise RunnerNotReady("runner is not ready for the configured isolation policy")
+
+
+def execute_python(
+    code: str,
+    stdin_text: str,
+    timeout_ms: int,
+    sandbox_uid: int | None = None,
+    sandbox_gid: int | None = None,
+    allowed_packages: tuple[str, ...] = (),
+) -> dict[str, Any]:
+    _require_runner_ready()
+    return RUNNER_EXECUTOR.execute(
+        code,
+        stdin_text,
+        timeout_ms,
+        sandbox_uid,
+        sandbox_gid,
+        allowed_packages,
+    )
 
 
 def _read_request_body(handler: BaseHTTPRequestHandler, content_length: int) -> bytes:
@@ -483,6 +761,8 @@ def _parse_execute_request(handler: BaseHTTPRequestHandler) -> tuple[str, str, i
         raise RequestError(HTTPStatus.BAD_REQUEST, "Request body must be valid UTF-8 JSON") from exc
     if not isinstance(payload, dict):
         raise RequestError(HTTPStatus.BAD_REQUEST, "Request body must be a JSON object")
+    if any(key not in EXECUTE_REQUEST_FIELDS for key in payload):
+        raise RequestError(HTTPStatus.BAD_REQUEST, "Request contains unsupported fields")
 
     code = payload.get("code")
     stdin_text = payload.get("stdin", "")
@@ -545,9 +825,39 @@ class RunnerHandler(BaseHTTPRequestHandler):
             and secrets.compare_digest(token, SETTINGS.service_token)
         )
 
+    def _drain_request_body(self) -> None:
+        """Consume a bounded body before rejecting auth on Windows keep-alive."""
+        try:
+            content_length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            self.close_connection = True
+            return
+        if content_length <= 0:
+            return
+        if content_length > SETTINGS.max_request_bytes:
+            self.close_connection = True
+            return
+        try:
+            _read_request_body(self, content_length)
+        except RequestError:
+            self.close_connection = True
+
     def do_GET(self) -> None:  # noqa: N802
         if self.path == "/health":
-            self._json_response(HTTPStatus.OK, {"status": "ok"})
+            capabilities = runner_capabilities()
+            if capabilities["ready"]:
+                # Keep the existing liveness response stable for Compose and
+                # older smoke clients; /ready and /capabilities expose detail.
+                self._json_response(HTTPStatus.OK, {"status": "ok"})
+            else:
+                self._json_response(HTTPStatus.SERVICE_UNAVAILABLE, capabilities)
+            return
+        if self.path in {"/ready", "/capabilities"}:
+            capabilities = runner_capabilities()
+            status = HTTPStatus.OK
+            if self.path == "/ready" and not capabilities["ready"]:
+                status = HTTPStatus.SERVICE_UNAVAILABLE
+            self._json_response(status, capabilities)
             return
         self._json_response(HTTPStatus.NOT_FOUND, {"error": "not found"})
 
@@ -556,10 +866,17 @@ class RunnerHandler(BaseHTTPRequestHandler):
             self._json_response(HTTPStatus.NOT_FOUND, {"error": "not found"})
             return
         if not self._is_authorized():
+            self._drain_request_body()
             self._json_response(
                 HTTPStatus.UNAUTHORIZED,
                 {"error": "unauthorized"},
                 {"WWW-Authenticate": "Bearer"},
+            )
+            return
+        if not runner_capabilities()["ready"]:
+            self._json_response(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                {"error": "runner is not ready", "code": "runner_not_ready"},
             )
             return
 
@@ -581,10 +898,22 @@ class RunnerHandler(BaseHTTPRequestHandler):
         try:
             self._json_response(
                 HTTPStatus.OK,
-                execute_python(code, stdin_text, timeout_ms, *execution_identity, allowed_packages),
+                execute_python(
+                    code,
+                    stdin_text,
+                    timeout_ms,
+                    sandbox_uid=execution_identity[0],
+                    sandbox_gid=execution_identity[1],
+                    allowed_packages=allowed_packages,
+                ),
             )
         except RequestError as exc:
             self._json_response(exc.status, {"error": str(exc)})
+        except RunnerNotReady:
+            self._json_response(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                {"error": "runner is not ready", "code": "runner_not_ready"},
+            )
         except Exception as exc:
             self.log_error("execution failed: %s", exc)
             self._json_response(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "execution failed"})
@@ -599,7 +928,9 @@ class RunnerHandler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
-    if SETTINGS.drop_privileges and os.geteuid() != 0:
+    if SETTINGS.drop_privileges and (
+        not hasattr(os, "geteuid") or os.geteuid() != 0
+    ):
         raise SystemExit("RUNNER_DROP_PRIVILEGES=1 requires the service to start as root")
     if not SETTINGS.drop_privileges and not _env_bool(
         "RUNNER_ALLOW_INSECURE_NO_PRIVILEGE_DROP", False

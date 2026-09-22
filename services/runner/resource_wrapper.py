@@ -4,9 +4,13 @@ from __future__ import annotations
 
 import math
 import os
-import resource
 import runpy
 import sys
+
+try:
+    import resource
+except ImportError:  # pragma: no cover - exercised by Windows host smoke
+    resource = None  # type: ignore[assignment]
 
 
 def _positive_int(name: str) -> int:
@@ -21,6 +25,12 @@ def apply_limits() -> None:
     memory_bytes = _positive_int("RUNNER_CHILD_MEMORY_BYTES")
     file_bytes = _positive_int("RUNNER_CHILD_FILE_BYTES")
     process_count = _positive_int("RUNNER_CHILD_PROCESS_COUNT")
+
+    # POSIX RLIMIT is available in the Linux runner image. Windows host-only
+    # smoke tests do not provide the module; the parent still enforces
+    # timeout/output/process cleanup, while this capability is not overstated.
+    if resource is None:
+        return
 
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     resource.setrlimit(resource.RLIMIT_CPU, (cpu_seconds, cpu_seconds + 1))

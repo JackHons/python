@@ -100,6 +100,11 @@ services:
       RUNNER_SANDBOX_GID: "10001"
       RUNNER_DROP_PRIVILEGES: "1"
       RUNNER_REQUEST_TIMEOUT_MS: "3000"
+      # Local Compose uses the bounded weak executor intentionally. Production
+      # or high-risk exams must provide a verified disposable strong executor
+      # and set RUNNER_REQUIRE_STRONG_ISOLATION=true instead.
+      RUNNER_ISOLATION_MODE: local_process
+      RUNNER_REQUIRE_STRONG_ISOLATION: "0"
       RUNNER_SERVICE_TOKEN: "${RUNNER_SERVICE_TOKEN:?Set RUNNER_SERVICE_TOKEN (24+ chars) in .env}"
     init: true
     restart: unless-stopped

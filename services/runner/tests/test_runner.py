@@ -10,6 +10,8 @@ import tempfile
 import threading
 import unittest
 import urllib.request
+from dataclasses import replace
+from unittest.mock import patch
 from pathlib import Path
 
 
@@ -22,6 +24,47 @@ import server  # noqa: E402
 
 
 class ExecutionTests(unittest.TestCase):
+    def test_local_executor_is_explicitly_weak(self) -> None:
+        capabilities = server.runner_capabilities()
+        self.assertEqual(capabilities["status"], "ok")
+        self.assertEqual(capabilities["isolation"]["mode"], "local_process")
+        self.assertEqual(capabilities["isolation"]["strength"], "weak")
+        self.assertFalse(capabilities["isolation"]["strong_verified"])
+        self.assertFalse(capabilities["capabilities"]["egress_isolation"])
+
+    def test_strong_required_fails_closed_without_external_executor(self) -> None:
+        settings = replace(server.SETTINGS, require_strong_isolation=True)
+        executor = server.LocalProcessExecutor(settings)
+        capabilities = server.runner_capabilities(settings, executor)
+        self.assertEqual(capabilities["status"], "not_ready")
+        self.assertFalse(capabilities["ready"])
+        self.assertTrue(capabilities["isolation"]["strong_required"])
+
+    def test_strong_mode_never_falls_back_to_local_process(self) -> None:
+        settings = replace(
+            server.SETTINGS,
+            isolation_mode=server.ISOLATION_MODE_STRONG_EXTERNAL,
+            require_strong_isolation=False,
+        )
+        executor = server.create_executor(settings)
+        self.assertIsInstance(executor, server.StrongExternalExecutor)
+        capabilities = server.runner_capabilities(settings, executor)
+        self.assertEqual(capabilities["status"], "not_ready")
+        self.assertFalse(capabilities["isolation"]["fallback_used"])
+
+    def test_invalid_isolation_mode_is_rejected_at_configuration(self) -> None:
+        with patch.dict(os.environ, {"RUNNER_ISOLATION_MODE": "not-a-mode"}):
+            with self.assertRaisesRegex(RuntimeError, "RUNNER_ISOLATION_MODE"):
+                server.Settings.from_env()
+
+    def test_child_environment_is_positive_allowlist_without_service_secrets(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            child_env = server.build_child_env(server.SETTINGS, Path(temporary), 1000)
+        self.assertNotIn("RUNNER_SERVICE_TOKEN", child_env)
+        self.assertNotIn("PYTHON_RUNNER_TOKEN", child_env)
+        self.assertNotIn("BACKEND_INTERNAL_TOKEN", child_env)
+        self.assertNotIn("AI_MASTER_KEY", child_env)
+        self.assertNotIn("SMTP_PASSWORD", child_env)
     def test_executes_code_with_stdin(self) -> None:
         result = server.execute_python("print(input().upper())", "student\n", 1000)
         self.assertEqual(result["stdout"], "STUDENT\n")
@@ -106,6 +149,24 @@ class HealthTests(unittest.TestCase):
             httpd.server_close()
             thread.join(timeout=1)
 
+    def test_capabilities_and_ready_endpoints_are_bounded(self) -> None:
+        httpd = server.ThreadingHTTPServer(("127.0.0.1", 0), server.RunnerHandler)
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        try:
+            for path in ("/ready", "/capabilities"):
+                with urllib.request.urlopen(
+                    f"http://127.0.0.1:{httpd.server_port}{path}", timeout=1
+                ) as response:
+                    payload = json.load(response)
+                    self.assertEqual(response.status, 200)
+                    self.assertEqual(payload["isolation"]["mode"], "local_process")
+                    self.assertNotIn("service_token", json.dumps(payload))
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+            thread.join(timeout=1)
+
 
 class ExecuteHttpTests(unittest.TestCase):
     @classmethod
@@ -152,6 +213,33 @@ class ExecuteHttpTests(unittest.TestCase):
     def test_rejects_invalid_json_shape(self) -> None:
         status, _ = self.request(b"[]")
         self.assertEqual(status, 400)
+
+    def test_request_cannot_select_isolation_mode(self) -> None:
+        status, payload = self.request(
+            json.dumps({"code": "print(1)", "isolation_mode": "strong_external"}).encode()
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(payload, {"error": "Request contains unsupported fields"})
+
+    def test_http_execution_fails_closed_when_strong_mode_is_required(self) -> None:
+        previous_settings = server.SETTINGS
+        previous_executor = server.RUNNER_EXECUTOR
+        try:
+            server.SETTINGS = replace(
+                previous_settings,
+                isolation_mode=server.ISOLATION_MODE_STRONG_EXTERNAL,
+                require_strong_isolation=False,
+            )
+            server.RUNNER_EXECUTOR = server.StrongExternalExecutor()
+            status, payload = self.request(b'{"code":"print(1)"}')
+            self.assertEqual(status, 503)
+            self.assertEqual(
+                payload,
+                {"error": "runner is not ready", "code": "runner_not_ready"},
+            )
+        finally:
+            server.SETTINGS = previous_settings
+            server.RUNNER_EXECUTOR = previous_executor
 
     def test_executes_authorized_request(self) -> None:
         status, payload = self.request(
