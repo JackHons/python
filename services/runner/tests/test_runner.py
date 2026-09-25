@@ -115,8 +115,8 @@ class ExecutionTests(unittest.TestCase):
             "ok": True,
             "stdout": "ok\n",
             "stderr": "",
-            "exit_code": 0,
-            "timed_out": False,
+            "exit_code": -9,
+            "timed_out": True,
             "output_limited": False,
             "duration_ms": 7,
         }
@@ -124,6 +124,7 @@ class ExecutionTests(unittest.TestCase):
             executor = server.StrongExternalExecutor(settings)
             actual = executor.execute("print(1)", "", 1000, allowed_packages=("numpy",))
         self.assertEqual(actual["stdout"], "ok\n")
+        self.assertTrue(actual["timed_out"])
         job_payload = request.call_args_list[1].args[1]
         self.assertEqual(
             set(job_payload), {"token", "code", "stdin", "timeout_ms", "allowed_packages"}

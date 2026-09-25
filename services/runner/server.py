@@ -230,7 +230,7 @@ class Settings:
     strong_token: str = ""
     strong_protocol_version: int = STRONG_EXECUTOR_PROTOCOL_VERSION
     strong_max_reply_bytes: int = 262144
-    strong_timeout_ms: int = 6000
+    strong_timeout_ms: int = 15000
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -285,7 +285,7 @@ class Settings:
                 "RUNNER_STRONG_MAX_REPLY_BYTES",
                 _env_int("RUNNER_STRONG_REPLY_BYTES", 262144),
             ),
-            strong_timeout_ms=_env_int("RUNNER_STRONG_TIMEOUT_MS", 6000, 250),
+            strong_timeout_ms=_env_int("RUNNER_STRONG_TIMEOUT_MS", 15000, 250),
         )
 
 

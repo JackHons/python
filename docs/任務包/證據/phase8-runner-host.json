@@ -11,9 +11,9 @@
     "bounded_queue_observed": true
   },
   "statusCounts": {
-    "200": 10,
-    "429": 30
+    "200": 15,
+    "429": 25
   },
-  "successfulResponses": 10,
+  "successfulResponses": 15,
   "note": "Host process with insecure no-privilege-drop override; Docker network/cgroup/ARM64 isolation is not verified."
 }

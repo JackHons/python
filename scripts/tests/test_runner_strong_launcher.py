@@ -123,6 +123,7 @@ class LauncherTests(unittest.TestCase):
                 token="t" * 24,
                 which=lambda _value: "docker.exe",
             )
+            runner._ready = True
             self.assertEqual(
                 runner.handle_request({"op": "capabilities", "token": "t" * 24}),
                 {
@@ -190,6 +191,7 @@ class LauncherTests(unittest.TestCase):
                 process_factory=factory,
                 which=lambda _value: "docker.exe",
             )
+            runner._ready = True
             response = runner.handle_request(
                 {
                     "token": "t" * 24,
@@ -230,6 +232,7 @@ class LauncherTests(unittest.TestCase):
                 process_factory=factory,
                 which=lambda _value: "docker.exe",
             )
+            runner._ready = True
             response = runner.handle_request(
                 {
                     "token": "t" * 24,
@@ -270,6 +273,107 @@ class LauncherTests(unittest.TestCase):
             self.assertIn("--filter=label=com.openai.runner-strong.managed=true", " ".join(call))
             self.assertIn("--filter=label=com.openai.runner-strong.job=" + "c" * 32, " ".join(call))
             self.assertNotIn("prune", call)
+
+    def test_startup_self_probe_is_required_and_verifies_runtime_output(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            token_path = root / "token"
+            token_path.write_text("t" * 24, encoding="ascii")
+            token_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+            commands = RecordingCommandRunner()
+            factory = RecordingProcessFactory(
+                {
+                    "stdout": "strong-runtime-probe\n",
+                    "stderr": "",
+                    "exit_code": 0,
+                    "timed_out": False,
+                    "output_limited": False,
+                }
+            )
+            runner = launcher.Launcher(
+                config(root),
+                command_runner=commands,
+                process_factory=factory,
+                which=lambda _value: "docker.exe",
+            )
+
+            with patch.object(launcher.LauncherConfig, "validate", return_value=None):
+                with patch.object(launcher, "_safe_token_file", return_value="t" * 24):
+                    runner.startup_check()
+
+            self.assertTrue(runner._ready)
+            self.assertIsNotNone(factory.argv)
+            self.assertEqual(
+                json.loads(factory.process.input_bytes)["code"],
+                launcher.STARTUP_PROBE_CODE,
+            )
+            self.assertGreaterEqual(
+                sum(call[1:3] == ["ps", "--all"] for call in commands.calls),
+                3,
+            )
+
+    def test_startup_self_probe_failure_keeps_launcher_unready(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            token_path = root / "token"
+            token_path.write_text("t" * 24, encoding="ascii")
+            token_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+            runner = launcher.Launcher(
+                config(root),
+                command_runner=RecordingCommandRunner(),
+                process_factory=RecordingProcessFactory(
+                    {
+                        "stdout": "unexpected\n",
+                        "stderr": "",
+                        "exit_code": 0,
+                        "timed_out": False,
+                        "output_limited": False,
+                    }
+                ),
+                which=lambda _value: "docker.exe",
+            )
+
+            with patch.object(launcher.LauncherConfig, "validate", return_value=None):
+                with patch.object(launcher, "_safe_token_file", return_value="t" * 24):
+                    with self.assertRaises(launcher.CapabilityError):
+                        runner.startup_check()
+            self.assertFalse(runner._ready)
+
+    def test_infrastructure_budget_wraps_student_timeout(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            cfg = config(Path(raw))
+            self.assertEqual(
+                cfg.infrastructure_timeout_ms(100),
+                100 + cfg.startup_grace_ms + cfg.cleanup_timeout_ms,
+            )
+
+    def test_student_timeout_is_a_normal_child_result(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            factory = RecordingProcessFactory(
+                {
+                    "stdout": "",
+                    "stderr": "",
+                    "exit_code": -9,
+                    "timed_out": True,
+                    "output_limited": False,
+                }
+            )
+            runner = launcher.Launcher(
+                config(Path(raw)),
+                token="t" * 24,
+                command_runner=RecordingCommandRunner(),
+                process_factory=factory,
+                which=lambda _value: "docker.exe",
+            )
+            runner._ready = True
+
+            response = runner.handle_request(
+                {"token": "t" * 24, "code": "while True: pass", "timeout_ms": 100}
+            )
+
+            self.assertEqual(response["ok"], True)
+            self.assertTrue(response["timed_out"])
+            self.assertEqual(response["exit_code"], -9)
 
     def test_startup_fails_closed_without_runsc_or_image(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

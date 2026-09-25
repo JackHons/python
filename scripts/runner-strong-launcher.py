@@ -35,6 +35,7 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 
 
 LOGGER = logging.getLogger("runner-strong-launcher")
+STARTUP_PROBE_CODE = "print('strong-runtime-probe')"
 
 # These labels are constants, not configuration and not request fields.  The
 # reaper always requires every label in this map (plus the per-job label).
@@ -62,8 +63,9 @@ DEFAULT_MAX_STDIN_BYTES = 65536
 DEFAULT_MIN_TIMEOUT_MS = 100
 DEFAULT_MAX_TIMEOUT_MS = 5000
 DEFAULT_DEFAULT_TIMEOUT_MS = 3000
-DEFAULT_SOCKET_TIMEOUT_MS = 6000
+DEFAULT_SOCKET_TIMEOUT_MS = 15_000
 DEFAULT_CLEANUP_TIMEOUT_MS = 1500
+DEFAULT_STARTUP_GRACE_MS = 4000
 MAX_CONFIG_REQUEST_BYTES = 1024 * 1024
 MAX_CONFIG_RESPONSE_BYTES = 2 * 1024 * 1024
 MAX_CONTAINER_COMMAND_ITEMS = 16
@@ -124,6 +126,7 @@ class LauncherConfig:
     default_timeout_ms: int = DEFAULT_DEFAULT_TIMEOUT_MS
     socket_timeout_ms: int = DEFAULT_SOCKET_TIMEOUT_MS
     cleanup_timeout_ms: int = DEFAULT_CLEANUP_TIMEOUT_MS
+    startup_grace_ms: int = DEFAULT_STARTUP_GRACE_MS
 
     @classmethod
     def from_env(cls) -> "LauncherConfig":
@@ -213,6 +216,12 @@ class LauncherConfig:
                 100,
                 10_000,
             ),
+            startup_grace_ms=_bounded_int_env(
+                "RUNNER_STRONG_STARTUP_GRACE_MS",
+                DEFAULT_STARTUP_GRACE_MS,
+                100,
+                15_000,
+            ),
         )
 
     def validate(self) -> None:
@@ -235,6 +244,12 @@ class LauncherConfig:
             raise ConfigurationError("response bound is invalid")
         if not self.min_timeout_ms <= self.default_timeout_ms <= self.max_timeout_ms:
             raise ConfigurationError("timeout bounds are invalid")
+        if self.cleanup_timeout_ms < 100 or self.startup_grace_ms < 100:
+            raise ConfigurationError("infrastructure timeout bounds are invalid")
+
+    def infrastructure_timeout_ms(self, student_timeout_ms: int) -> int:
+        """Give the broker bounded infrastructure time around the student budget."""
+        return student_timeout_ms + self.startup_grace_ms + self.cleanup_timeout_ms
 
 
 def _absolute_path_env(name: str, default: str) -> Path | str:
@@ -399,9 +414,11 @@ class Launcher:
         self._command_runner = command_runner
         self._process_factory = process_factory
         self._which = which
+        self._ready = False
 
     def startup_check(self) -> None:
         """Refuse service startup unless every required host capability is ready."""
+        self._ready = False
         self.config.validate()
         if self._which(self.config.docker_bin) is None and not Path(self.config.docker_bin).is_absolute():
             raise CapabilityError("docker executable is unavailable")
@@ -409,6 +426,26 @@ class Launcher:
         self._check_docker_capabilities()
         if not self.reap_owned_containers():
             raise CapabilityError("owned-container cleanup is unavailable")
+        try:
+            probe = self.execute_job(
+                STARTUP_PROBE_CODE,
+                "",
+                min(self.config.default_timeout_ms, self.config.max_timeout_ms),
+                [],
+            )
+        except LauncherError as exc:
+            raise CapabilityError("runtime self-probe failed") from exc
+        if (
+            probe.get("stdout") != "strong-runtime-probe\n"
+            or probe.get("stderr") != ""
+            or probe.get("exit_code") != 0
+            or probe.get("timed_out") is not False
+            or probe.get("output_limited") is not False
+        ):
+            raise CapabilityError("runtime self-probe failed")
+        if not self.reap_owned_containers():
+            raise CapabilityError("runtime self-probe cleanup is unavailable")
+        self._ready = True
 
     def _run_command(self, argv: Sequence[str]) -> Any:
         try:
@@ -472,6 +509,8 @@ class Launcher:
 
     def capabilities(self) -> dict[str, Any]:
         """Return the fixed capability contract after startup checks pass."""
+        if not self._ready:
+            return _error_response("runner_unavailable")
         return {
             "ok": True,
             "capabilities": {
@@ -533,6 +572,9 @@ class Launcher:
         except (UnicodeEncodeError, RequestValidationError):
             return _error_response("invalid_request")
 
+        if not self._ready:
+            return _error_response("runner_unavailable")
+
         try:
             return self.execute_job(code, stdin_text, timeout_ms, allowed_packages)
         except LauncherError as exc:
@@ -579,7 +621,7 @@ class Launcher:
                 child_input,
                 self.config.max_response_bytes,
                 self.config.cleanup_timeout_ms,
-                timeout_ms,
+                self.config.infrastructure_timeout_ms(timeout_ms),
             )
             if timed_out:
                 raise LauncherError("runner_timeout")
@@ -780,6 +822,8 @@ def _decode_request(raw: bytes) -> Any:
 def serve(launcher: Launcher) -> None:
     config = launcher.config
     config.validate()
+    if not launcher._ready:
+        raise CapabilityError("runtime self-probe has not passed")
     parent = config.socket_path.parent
     try:
         parent_info = parent.stat()

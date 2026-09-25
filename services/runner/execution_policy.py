@@ -24,7 +24,10 @@ MAX_OUTPUT_BYTES = 65_536
 MAX_TIMEOUT_MS = 5_000
 DEFAULT_TIMEOUT_MS = 3_000
 MIN_TIMEOUT_MS = 100
-MEMORY_BYTES = 768 * 1024 * 1024
+# The trusted runsc launcher caps each container at 512 MiB.  Keep the
+# one-shot child below that ceiling so the Python process cannot consume the
+# container's full allowance before the parent can report a bounded result.
+MEMORY_BYTES = 384 * 1024 * 1024
 MAX_FILE_BYTES = 5 * 1024 * 1024
 CHILD_PROCESS_COUNT = 128
 

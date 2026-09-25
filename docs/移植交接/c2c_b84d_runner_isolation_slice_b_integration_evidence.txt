@@ -1,11 +1,11 @@
 Slice B integration evidence — sanitized handoff record
 Date: 2026-09-26 (Asia/Hong_Kong)
-Task: c2c_b84d, iteration 5
-Decision: SLICE_B_INTEGRATION_LOCAL_GATE_PASS; P0_OPEN
+Task: c2c_b84d, iteration 6
+Decision: SLICE_B_FINALIZATION_LOCAL_GATE_PASS; P0_OPEN
 
 Scope
 ------
-The Runner HTTP broker now talks only to a narrow authenticated Unix-socket
+The Runner HTTP broker talks only to a narrow authenticated Unix-socket
 protocol. A host-owned trusted launcher owns the Docker/runsc policy and starts
 one disposable job container per accepted request. The normal Compose profile
 remains local_process/weak; strong mode is an explicit override.
@@ -13,64 +13,84 @@ remains local_process/weak; strong mode is an explicit override.
 Implemented boundary
 --------------------
 - services/runner/job_worker.py: one-shot bounded JSON stdin/stdout worker.
-- services/runner/execution_policy.py: bounded job and source-policy validation.
+- services/runner/execution_policy.py: bounded job/source policy and a 384 MiB
+  child address-space ceiling below the launcher's 512 MiB container ceiling.
 - services/runner/Dockerfile.job: Python 3.12 job image, fixed non-root UID,
   numpy/pandas/matplotlib dependencies, no broker or service token.
 - scripts/runner-strong-launcher.py: fixed Docker argv, runsc, --network=none,
   read-only root, cap drop, no-new-privileges, memory/CPU/PID/tmpfs limits,
-  non-root identity, --pull=never, stdin input, timeout cleanup and scoped
-  owner-label reaping.
+  non-root identity, --pull=never, stdin input, scoped cleanup, and an actual
+  startup self-probe using the same runsc job path before readiness is attested.
+  Student timeout is kept inside the worker; launcher infrastructure gets a
+  separate bounded startup/cleanup grace budget.
 - services/runner/server.py: bounded Unix-socket client, strict capability
-  handshake, bounded replies/timeouts, sanitized fail-closed errors, and no
-  local fallback in strong mode.
+  handshake, strong timeout budget large enough for the launcher budget,
+  sanitized fail-closed infrastructure errors, and no local fallback in strong
+  mode. A worker result with timed_out=true remains an HTTP 200 job result.
 - docker-compose.strong-runner.yml: explicit strong-mode deployment override
   mounting only the launcher socket directory, never Docker/containerd sockets.
-- scripts/runner-strong-runtime-smoke.py: black-box readiness, normal-package,
-  timeout, policy and bounded 40-job checks.
+- scripts/runner-strong-runtime-smoke.py: black-box HTTP readiness, numpy,
+  pandas, matplotlib Agg, student timeout, permitted-code egress canary,
+  filesystem/repository/data and secret-environment canaries, cross-job state,
+  runtime error, memory/PID pressure, recovery, and bounded 40-job checks.
 
 Runtime target
 --------------
 - Target: user-owned Ubuntu-StrongRuntime WSL2 distro with its own Docker
   Engine/containerd, independent of Docker Desktop's managed distro.
 - B0 runtime evidence: docs/移植交接/c2c_b84d_runner_slice_b0_linux_runtime_evidence.txt
-- runsc is registered and real runtime probes passed in B0, including
-  network-none, read-only/tmpfs, non-root, resource limits and cleanup.
-- For this local integration gate, the job image digest was
-  sha256:a0ea6b6a26b066fa77d4b356655882984abe29f4860e138af214ecfbc4879f73.
+- runsc is registered and the real launcher startup self-probe passed through
+  the configured image and fixed policy.
+- The local proof image used for this iteration was built offline from the
+  already available equivalent Python 3.12 Runner base with RUNNER_JOB_INSTALL=0.
+  Its exact local digest was
+  sha256:9761a45eb3da57cbbadd41a4e6a28aa583d7ab8959c79f412d350580c7e0e228.
   No token, credential, socket secret or submitted source is recorded here.
 
 Integration results
 -------------------
 - /ready: ready=true, mode=strong_external, strength=strong,
-  strong_verified=true, egress_isolation=true, strong_sandbox=true.
-- Basic stdin job through HTTP -> launcher socket -> runsc: PASS.
-- numpy job through the same path: PASS.
-- Short timeout: sanitized runner_not_ready/503 fail-closed response: PASS.
-- Blocked socket import policy: 422 rejection: PASS.
-- Real 40-job broker run with 2 bounded workers: accepted=40, busy_rejected=0,
-  p50=3903.05 ms, max=4277.87 ms, every accepted marker matched.
-- Launcher-owned container cleanup after the run: zero remaining containers.
+  strong_verified=true, egress_isolation=true, strong_sandbox=true; readiness
+  was gated by the real startup self-probe.
+- Basic stdin, numpy, pandas and matplotlib Agg jobs through HTTP -> launcher
+  socket -> runsc: PASS.
+- Student timeout: HTTP 200 with timed_out=true: PASS.
+- Permitted-code egress canary, blocked socket import policy, host/repository/
+  data paths, service-secret environment canary: PASS.
+- Cross-job state isolation, runtime-error cleanup, bounded memory pressure,
+  bounded PID pressure, and post-adversarial recovery: PASS.
+- Real 40-job broker run with 2 bounded workers: accepted=40,
+  busy_rejected=0, p50=4006.81 ms, max=4371.75 ms; every accepted marker
+  matched.
+- Final exact owner+managed-label observation after the run: zero remaining
+  containers. The smoke script itself used only HTTP; Docker was used only for
+  this final observation.
 
 Verification commands
 ---------------------
 - python -m unittest discover -s services/runner/tests -p 'test_*.py': 29/29 OK
-- python -m unittest discover -s scripts/tests -p 'test_runner_strong_launcher.py': 7/7 OK
+- python -m unittest discover -s scripts/tests -p 'test_runner_strong_launcher.py': 11/11 OK
 - python -m py_compile on changed Python modules: PASS
+- npx tsc --noEmit: PASS
+- npm run test:phase3: 9/9 PASS
+- npm run test:all: 137 PASS, 2 expected PPTX-fixture skips, 0 failures
+- npm run security:phase8: 11/11 PASS
+- npm run runner:phase8: PASS (15 HTTP 200, 25 bounded 429 responses)
 - docker compose -f docker-compose.yml -f docker-compose.strong-runner.yml
-  config --quiet: PASS
+  config --quiet: PASS with ephemeral validation-only required environment values
+- npx vinext build with WRANGLER_LOG_PATH set in the Windows shell: PASS
 - scripts/runner-strong-runtime-smoke.py with RUNNER_SMOKE_JOBS=40: PASS
 
 Limitations and remaining gate
 ------------------------------
 - Ubuntu-StrongRuntime cannot reach Docker Hub in this environment, so the
-  default Dockerfile.job base-image pull was not re-built there. The local
-  integration image was built offline from an already available equivalent
-  Python 3.12 Runner image; the committed Dockerfile default remains the
-  standard python:3.12-slim-bookworm base.
-- The broker test path rejects socket imports in the source policy. Independent
-  network-none enforcement was proven by the real runsc B0 probes; a future
-  adversarial pass should add a permitted-code network canary or equivalent
-  black-box fixture without weakening source policy.
-- This record does not close P0. Independent ChatGPT review must inspect the
-  launcher argv, socket boundary, image pinning, cleanup, adversarial results,
-  and deployment-owner acceptance on the target host.
+  committed Dockerfile.job default python:3.12-slim-bookworm pull/build gate
+  remains blocked. The local proof image above is not a substitute for that
+  deployment gate.
+- npm run build is not portable in the current Windows shell because its script
+  uses Unix inline environment assignment (WRANGLER_LOG_PATH=...); the direct
+  equivalent npx vinext build passed. npm run lint remains blocked only by six
+  pre-existing no-useless-escape findings in scripts/migration/restore-compose.mjs.
+- This record does not close P0. Independent ChatGPT review, deployment-owner
+  acceptance on the target host, exact default image build/pull, and formal
+  deployment regression remain required.
