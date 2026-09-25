@@ -1,0 +1,42 @@
+Runner Isolation Slice B — host capability preflight evidence
+
+Task: c2c_b84d
+Iteration: 3
+Date: 2026-09-25
+Decision: P0_BLOCKED_ON_HOST_RUNTIME
+
+Scope
+-----
+Read-only host capability check before any Slice B source change. No project
+source, deployment configuration, or Git history was modified by the preflight.
+
+Host
+----
+- OS: Windows 11 Home, x64
+- CPU: Intel Core Ultra 7 155H, 22 logical processors
+- Memory: approximately 31.47 GB
+
+Observed facts
+--------------
+- Docker CLI is installed: 29.6.2.
+- `docker version` cannot reach the `desktop-linux` server daemon.
+- `docker info` cannot reach the Docker API pipe; Docker Desktop is not running.
+- Docker contexts `desktop-linux` and `default` cannot provide a working daemon.
+- Registered Docker runtimes and local images could not be inspected because the
+  daemon is unavailable.
+- `runsc --version` fails because `runsc` is not on PATH.
+- A real runsc container was not executed.
+- `--network=none`, memory/CPU limits, and PID limits were not verified.
+
+Conservative result
+-------------------
+The host cannot currently demonstrate a usable runsc/gVisor runtime. Slice B
+must not add an untestable production adapter or label a fake launcher as strong
+isolation. Slice A remains the highest verified isolation level, and the overall
+P0 strong per-job sandbox item remains OPEN.
+
+Next gate
+---------
+On a target host with Docker Desktop or another supported daemon running, install
+and register a supported hardened runtime (preferably gVisor/runsc), then rerun
+the read-only capability gate before implementing or claiming Slice B.
