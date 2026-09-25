@@ -1,7 +1,7 @@
 Slice B integration evidence — sanitized handoff record
 Date: 2026-09-26 (Asia/Hong_Kong)
-Task: c2c_b84d, iteration 7
-Decision: SLICE_B_EVIDENCE_HARDENING_LOCAL_GATE_PASS; P0_OPEN
+Task: c2c_b84d, deployment follow-up
+Decision: SLICE_B_TARGET_EXACT_IMAGE_AND_DEPLOYMENT_GATE_PASS; P0_PENDING_DEPLOYMENT_OWNER_ACCEPTANCE
 
 Scope
 ------
@@ -42,10 +42,18 @@ Runtime target
 - B0 runtime evidence: docs/移植交接/c2c_b84d_runner_slice_b0_linux_runtime_evidence.txt
 - runsc is registered and the real launcher startup self-probe passed through
   the configured image and fixed policy.
-- The local proof image used for this iteration was built offline from the
-  already available equivalent Python 3.12 Runner base with RUNNER_JOB_INSTALL=0.
-  Its exact local digest was
-  sha256:9761a45eb3da57cbbadd41a4e6a28aa583d7ab8959c79f412d350580c7e0e228.
+- Registry recovery: Windows has an authenticated localhost proxy at
+  127.0.0.1:7897; WSL NAT cannot use that localhost endpoint directly. The
+  target Docker service now has a persistent systemd override at
+  /etc/systemd/system/docker.service.d/override.conf using the verified WSL
+  gateway 172.30.0.1:7897 (no credentials recorded). After Docker restart,
+  deleting the local base tag and running a fresh `docker pull` succeeded.
+- Exact target base pull/build gate: `python:3.12-slim-bookworm` resolved to
+  sha256:392307d22300de8b5986851a12d9176dfc0fc073e65bf6523ebd7dcbeb23564e.
+  The committed services/runner/Dockerfile.job was built on target with its
+  default base and RUNNER_JOB_INSTALL=1; BuildKit received the same verified
+  gateway proxy for its registry client. The final immutable runner image is
+  learning-platform/runner-job@sha256:b26c79f2270be8b8fa74c4ca8e12373cd3e6e0fad435424da6f70d33264b47a6.
   No token, credential, socket secret or submitted source is recorded here.
 
 Integration results
@@ -66,9 +74,9 @@ Integration results
   returned HTTP 200 with timed_out=false and a non-zero child exit. PID pressure
   requested 256 concurrent threads and actually started 12 before the limit
   bounded creation.
-- Real 40-job broker run with 2 bounded workers: accepted=40,
-  busy_rejected=0, p50=2231.51 ms, max=2809.66 ms; every accepted marker
-  matched.
+- Real 40-job broker run with 2 bounded workers against the exact immutable
+  image: accepted=40, busy_rejected=0, p50=2132.25 ms, max=2463.49 ms; every
+  accepted marker matched.
 - Final exact owner+managed-label observation after the run: zero remaining
   containers. The smoke script itself used only HTTP; Docker was used only for
   this final observation.
@@ -82,28 +90,29 @@ Verification commands
 - npm run test:phase3: 9/9 PASS
 - npm run test:all: 137 PASS, 2 expected PPTX-fixture skips, 0 failures
 - npm run security:phase8: 11/11 PASS
-- npm run runner:phase8: PASS (15 HTTP 200, 25 bounded 429 responses)
+- npm run runner:phase8: PASS (10 HTTP 200, 30 bounded 429 responses)
 - docker compose -f docker-compose.yml -f docker-compose.strong-runner.yml
   config --quiet: PASS with ephemeral validation-only required environment values
 - npx vinext build with WRANGLER_LOG_PATH set in the Windows shell: PASS
 - scripts/runner-strong-runtime-smoke.py with RUNNER_SMOKE_JOBS=40: PASS
-  on Ubuntu-StrongRuntime, including host_canaries_created=3,
-  pid_requested=256, pid_started=12, memory_http_status=200, and zero final
-  owner+managed containers: PASS
+- on Ubuntu-StrongRuntime with the exact immutable runner image: PASS,
+  including host_canaries_created=3, pid_requested=256, pid_started=12,
+  memory_http_status=200, accepted=40, p50=2132.25 ms, max=2463.49 ms,
+  and zero final owner+managed containers
+- Docker Hub registry recovery: after Docker service restart and removal of the
+  local `python:3.12-slim-bookworm` tag, a fresh `docker pull` returned the
+  expected base digest; Docker service remained active.
 
 Limitations and remaining gate
 ------------------------------
-- Ubuntu-StrongRuntime cannot reach Docker Hub in this environment, so the
-  committed Dockerfile.job default python:3.12-slim-bookworm pull/build gate
-  remains blocked. The local proof image above is not a substitute for that
-  deployment gate. The three adversarial evidence weaknesses identified by
-  independent review are now closed; exact default image build/pull, formal
-  deployment regression against that exact image, and deployment-owner
-  acceptance remain.
+- The target exact-image build/pull and formal deployment regression now pass.
+  Deployment-owner acceptance is still pending and must be explicitly
+  confirmed by the deployment owner; this record does not self-approve that
+  acceptance.
 - npm run build is not portable in the current Windows shell because its script
   uses Unix inline environment assignment (WRANGLER_LOG_PATH=...); the direct
   equivalent npx vinext build passed. npm run lint remains blocked only by six
   pre-existing no-useless-escape findings in scripts/migration/restore-compose.mjs.
-- This record does not close P0. Independent ChatGPT review, deployment-owner
-  acceptance on the target host, exact default image build/pull, and formal
-  deployment regression remain required.
+- This record keeps P0 open only for the explicit deployment-owner acceptance.
+  The exact default image, target registry recovery, formal deployment
+  regression, and independent evidence-hardening gate are recorded as pass.
