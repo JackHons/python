@@ -41,7 +41,7 @@ async function run(command: string, args: string[], cwd: string, timeoutMs: numb
     child.stdin.end();
     let stdout = "";
     let stderr = "";
-    const append = (current: string, chunk: Buffer) => (current + chunk.toString("utf8")).slice(-16_384);
+    const append = (current: string, chunk: Buffer) => (current + chunk.toString()).slice(-16_384);
     child.stdout.on("data", (chunk: Buffer) => { stdout = append(stdout, chunk); });
     child.stderr.on("data", (chunk: Buffer) => { stderr = append(stderr, chunk); });
     const timer = setTimeout(() => {
