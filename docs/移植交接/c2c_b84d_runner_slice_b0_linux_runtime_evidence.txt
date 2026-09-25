@@ -3,13 +3,12 @@ Runner Isolation Slice B0 — Linux-owned runtime target evidence
 Task: c2c_b84d
 Iteration: 4
 Date: 2026-09-25
-Decision: P0_BLOCKED_ON_STRONG_RUNTIME_TARGET
+Decision: B0_RUNTIME_GATE_PASS; P0_OPEN
 
 Scope
 -----
-Read-only inspection of possible Linux targets before any Runner Slice B
-implementation. No packages were installed, no services were reconfigured, and
-no project source was changed.
+The initial inspection was read-only. A user-owned WSL2 target was then
+provisioned and configured; no project source was changed.
 
 Host and WSL
 ------------
@@ -23,6 +22,14 @@ Host and WSL
 - `runsc --version` in that managed environment returns permission denied. This
   is not treated as evidence that gVisor is installed or usable.
 
+Linux-owned WSL2 target
+-----------------------
+- User-owned distro: `Ubuntu-StrongRuntime`, WSL2.
+- Ubuntu 24.04.5 LTS, kernel `6.6.87.2-microsoft-standard-WSL2`, x86_64.
+- Independent Docker Engine 29.8.1 with containerd 2.3.5 and runc 1.5.1.
+- Systemd is running in this distro and owns the local Docker service/socket.
+- Docker Desktop's managed daemon was not used for these probes.
+
 Docker Desktop managed daemon
 -----------------------------
 - Docker Desktop 4.84.0 / Engine 29.6.2, linux/amd64.
@@ -33,18 +40,38 @@ Docker Desktop managed daemon
 - A local `--runtime=runsc` probe already failed with
   `unknown or invalid runtime name: runsc`.
 
+gVisor registration and real probes
+-----------------------------------
+- Installed official `runsc` package version `release-20260921.0`.
+- Registered with the independent Docker daemon using `runsc install`; Docker
+  reports runtime `runsc` at `/usr/bin/runsc` alongside runc.
+- Real local image `local/runsc-busybox:probe` executed successfully through
+  `docker run --rm --runtime=runsc`.
+- `--network=none`: outbound probe was blocked.
+- `--read-only`: rootfs write was blocked; explicit tmpfs remained writable.
+- `--user 65532:65532`: non-root execution returned UID 65532.
+- `--cap-drop=ALL` and `--security-opt=no-new-privileges` were accepted.
+- `--memory=32m`, `--cpus=0.25`, and `--pids-limit=32` were accepted; the
+  memory over-limit workload was terminated/rejected.
+- A PID over-fork workload under `--pids-limit=8` was rejected with resource
+  exhaustion.
+- A forced `docker kill` on a runsc container with `--rm` left no container
+  behind.
+- Pulling `hello-world` from Docker Hub timed out because the standalone WSL
+  daemon has no proxy configuration; the real probes therefore used a local,
+  no-pull image. This does not affect runtime registration evidence.
+
 Conservative result
 -------------------
-Docker Desktop is healthy, but its managed Linux VM is not an independently
-controlled Linux-owned Docker/containerd host for this security gate. The
-current machine cannot prove a supported real gVisor/runsc runtime. Do not
-inject binaries or configuration into Docker Desktop's private VM, and do not
-implement the production StrongExternalExecutor before the runtime gate passes.
+The supported Linux-owned runtime target now passes the bounded B0 gate. The
+Docker Desktop managed VM remains out of scope and was not modified. Do not
+implement the production StrongExternalExecutor until the application-side
+broker/launcher integration, adversarial suite, and 40-job disposable-sandbox
+test are completed.
 
 Next gate
 ---------
-Provision or select a supported native Linux host/VM, or a user-owned WSL2
-Linux distro running its own Docker Engine/containerd. On that target, record
-kernel/architecture, install and register gVisor through the host's supported
-mechanism, then run the real B0 probes for runsc, network-none, resource
-limits, read-only/non-root/tmpfs behavior, and cleanup. Overall P0 remains OPEN.
+Proceed to the application-side Slice B integration on this target, keeping the
+Runner isolated from Docker/containerd sockets and preserving fail-closed
+behavior. Overall P0 remains OPEN until the integration and full adversarial
+validation pass.
