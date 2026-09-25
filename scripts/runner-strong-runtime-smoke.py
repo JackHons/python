@@ -13,8 +13,11 @@ import json
 import os
 import statistics
 import sys
+import tempfile
 import time
+import uuid
 from dataclasses import dataclass
+from pathlib import Path
 from urllib import error, request
 
 
@@ -89,6 +92,56 @@ def _run_job(base_url: str, token: str, marker: str) -> HttpResult:
 def _assert_result(result: HttpResult, message: str) -> None:
     _assert(result.status == 200, f"{message}: HTTP {result.status}")
     _assert("error" not in result.payload, f"{message}: error response")
+
+
+def _run_host_canary_probe(base_url: str, token: str) -> int:
+    """Create real target-host files, then prove the disposable job cannot read them."""
+    _assert(sys.platform == "linux", "strong smoke must run on the Linux target filesystem")
+    repo_root = Path(__file__).resolve().parents[1]
+    data_root = repo_root / ".data"
+    _assert(repo_root.is_dir(), "checked-out repository root is unavailable")
+    _assert(data_root.is_dir(), "validation data directory is unavailable")
+
+    canary_id = uuid.uuid4().hex
+    host_temp_root = Path(tempfile.mkdtemp(prefix=f"runner-smoke-host-{canary_id}-"))
+    canary_paths = [
+        host_temp_root / "host-only-canary.txt",
+        repo_root / f".runner-smoke-host-canary-{canary_id}",
+        data_root / f".runner-smoke-data-canary-{canary_id}",
+    ]
+    marker = f"host-marker-{uuid.uuid4().hex}"
+    try:
+        for path in canary_paths:
+            path.write_text(marker, encoding="ascii")
+        _assert(
+            all(path.is_file() and path.read_text(encoding="ascii") == marker for path in canary_paths),
+            "target-host canaries were not created and verified",
+        )
+
+        targets = json.dumps([path.as_posix() for path in canary_paths], ensure_ascii=False)
+        result = _execute(
+            base_url,
+            token,
+            "targets = "
+            + targets
+            + "\nstates = []\n"
+            "for target in targets:\n"
+            "    try:\n"
+            "        open(target, 'rb').read(1)\n"
+            "        states.append('open')\n"
+            "    except OSError:\n"
+            "        states.append('blocked')\n"
+            "print(','.join(states))\n",
+        )
+        _assert(
+            result.status == 200 and result.payload.get("stdout") == "blocked,blocked,blocked\n",
+            "host/repository/data canary was accessible",
+        )
+        return len(canary_paths)
+    finally:
+        for path in canary_paths:
+            path.unlink(missing_ok=True)
+        host_temp_root.rmdir()
 
 
 def main() -> int:
@@ -172,23 +225,7 @@ def main() -> int:
     )
     _assert(policy.status == 422, "blocked network capability was not rejected")
 
-    filesystem = _execute(
-        base_url,
-        token,
-        "targets = ['/workspace/learning-platform-host-canary', '/repo/.git/config', '/data/learning.sqlite']\n"
-        "states = []\n"
-        "for target in targets:\n"
-        "    try:\n"
-        "        open(target, 'rb').read(1)\n"
-        "        states.append('open')\n"
-        "    except OSError:\n"
-        "        states.append('blocked')\n"
-        "print(','.join(states))\n",
-    )
-    _assert(
-        filesystem.status == 200 and filesystem.payload.get("stdout") == "blocked,blocked,blocked\n",
-        "host/repository/data canary was accessible",
-    )
+    host_canaries_created = _run_host_canary_probe(base_url, token)
 
     environment = _execute(
         base_url,
@@ -234,33 +271,43 @@ def main() -> int:
         timeout_ms=3000,
     )
     _assert(
-        memory_pressure.status in {200, 503},
+        memory_pressure.status == 200,
         f"memory pressure returned unexpected HTTP {memory_pressure.status}",
     )
-    if memory_pressure.status == 200:
-        _assert(memory_pressure.payload.get("exit_code") not in (0, None), "memory limit was not enforced")
+    _assert(memory_pressure.payload.get("timed_out") is False, "memory pressure timed out")
+    _assert(memory_pressure.payload.get("exit_code") not in (0, None), "memory limit was not enforced")
 
+    pid_requested = 256
     pid_pressure = _execute(
         base_url,
         token,
-        "import threading\n"
-        "threads = [threading.Thread(target=lambda: None) for _ in range(256)]\n"
-        "started = 0\n"
-        "for thread in threads:\n"
-        "    try:\n"
-        "        thread.start()\n"
+        f"import threading\nrequested = {pid_requested}\n"
+        "release = threading.Event()\nthreads = []\nstarted = 0\n"
+        "try:\n"
+        "    for _ in range(requested):\n"
+        "        thread = threading.Thread(target=release.wait)\n"
+        "        try:\n"
+        "            thread.start()\n"
+        "        except RuntimeError:\n"
+        "            break\n"
+        "        threads.append(thread)\n"
         "        started += 1\n"
-        "    except RuntimeError:\n"
-        "        break\n"
-        "for thread in threads[:started]:\n"
-        "    thread.join()\n"
-        "print('pid-pressure-bounded')\n",
+        "    print(started)\n"
+        "finally:\n"
+        "    release.set()\n"
+        "    for thread in threads:\n"
+        "        thread.join(timeout=1)\n",
         timeout_ms=3000,
     )
     _assert(
-        pid_pressure.status == 200 and pid_pressure.payload.get("stdout") == "pid-pressure-bounded\n",
-        "PID pressure was not bounded",
+        pid_pressure.status == 200 and pid_pressure.payload.get("exit_code") == 0,
+        "PID pressure job failed",
     )
+    try:
+        pid_started = int(str(pid_pressure.payload.get("stdout", "")).strip())
+    except ValueError as exc:
+        raise AssertionError("PID pressure did not report a numeric started count") from exc
+    _assert(0 < pid_started < pid_requested, "PID ceiling did not bound concurrent tasks")
 
     cleanup_probe = _run_job(base_url, token, "post-adversarial-cleanup")
     _assert(
@@ -299,12 +346,16 @@ def main() -> int:
         "student_timeout_normal_result": "pass",
         "egress_blocked": "pass",
         "blocked_network_policy": "pass",
+        "host_canaries_created": host_canaries_created,
         "host_repo_data_blocked": "pass",
         "secrets_absent": "pass",
         "cross_job_isolation": "pass",
         "runtime_error_cleanup": "pass",
         "memory_pressure_bounded": "pass",
         "pid_pressure_bounded": "pass",
+        "pid_requested": pid_requested,
+        "pid_started": pid_started,
+        "memory_http_status": memory_pressure.status,
         "post_adversarial_cleanup": "pass",
         "jobs": jobs,
         "accepted": len(accepted),

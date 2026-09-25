@@ -1,7 +1,7 @@
 Slice B integration evidence — sanitized handoff record
 Date: 2026-09-26 (Asia/Hong_Kong)
-Task: c2c_b84d, iteration 6
-Decision: SLICE_B_FINALIZATION_LOCAL_GATE_PASS; P0_OPEN
+Task: c2c_b84d, iteration 7
+Decision: SLICE_B_EVIDENCE_HARDENING_LOCAL_GATE_PASS; P0_OPEN
 
 Scope
 ------
@@ -29,7 +29,8 @@ Implemented boundary
   mode. A worker result with timed_out=true remains an HTTP 200 job result.
 - docker-compose.strong-runner.yml: explicit strong-mode deployment override
   mounting only the launcher socket directory, never Docker/containerd sockets.
-- scripts/runner-strong-runtime-smoke.py: black-box HTTP readiness, numpy,
+- scripts/runner-strong-runtime-smoke.py: black-box HTTP readiness, target-host
+  canary creation/verification, numpy,
   pandas, matplotlib Agg, student timeout, permitted-code egress canary,
   filesystem/repository/data and secret-environment canaries, cross-job state,
   runtime error, memory/PID pressure, recovery, and bounded 40-job checks.
@@ -55,12 +56,18 @@ Integration results
 - Basic stdin, numpy, pandas and matplotlib Agg jobs through HTTP -> launcher
   socket -> runsc: PASS.
 - Student timeout: HTTP 200 with timed_out=true: PASS.
-- Permitted-code egress canary, blocked socket import policy, host/repository/
-  data paths, service-secret environment canary: PASS.
+- Permitted-code egress canary, blocked socket import policy, service-secret
+  environment canary: PASS.
+- Three target-host canaries were created and read back before the broker job
+  (system temp, checked-out repository root, and checked-out .data directory);
+  all three were blocked from the disposable job and cleaned up afterward.
 - Cross-job state isolation, runtime-error cleanup, bounded memory pressure,
-  bounded PID pressure, and post-adversarial recovery: PASS.
+  bounded PID pressure, and post-adversarial recovery: PASS. Memory pressure
+  returned HTTP 200 with timed_out=false and a non-zero child exit. PID pressure
+  requested 256 concurrent threads and actually started 12 before the limit
+  bounded creation.
 - Real 40-job broker run with 2 bounded workers: accepted=40,
-  busy_rejected=0, p50=4006.81 ms, max=4371.75 ms; every accepted marker
+  busy_rejected=0, p50=2231.51 ms, max=2809.66 ms; every accepted marker
   matched.
 - Final exact owner+managed-label observation after the run: zero remaining
   containers. The smoke script itself used only HTTP; Docker was used only for
@@ -80,13 +87,19 @@ Verification commands
   config --quiet: PASS with ephemeral validation-only required environment values
 - npx vinext build with WRANGLER_LOG_PATH set in the Windows shell: PASS
 - scripts/runner-strong-runtime-smoke.py with RUNNER_SMOKE_JOBS=40: PASS
+  on Ubuntu-StrongRuntime, including host_canaries_created=3,
+  pid_requested=256, pid_started=12, memory_http_status=200, and zero final
+  owner+managed containers: PASS
 
 Limitations and remaining gate
 ------------------------------
 - Ubuntu-StrongRuntime cannot reach Docker Hub in this environment, so the
   committed Dockerfile.job default python:3.12-slim-bookworm pull/build gate
   remains blocked. The local proof image above is not a substitute for that
-  deployment gate.
+  deployment gate. The three adversarial evidence weaknesses identified by
+  independent review are now closed; exact default image build/pull, formal
+  deployment regression against that exact image, and deployment-owner
+  acceptance remain.
 - npm run build is not portable in the current Windows shell because its script
   uses Unix inline environment assignment (WRANGLER_LOG_PATH=...); the direct
   equivalent npx vinext build passed. npm run lint remains blocked only by six
