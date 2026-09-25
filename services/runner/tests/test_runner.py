@@ -52,6 +52,98 @@ class ExecutionTests(unittest.TestCase):
         self.assertEqual(capabilities["status"], "not_ready")
         self.assertFalse(capabilities["isolation"]["fallback_used"])
 
+    def test_strong_capability_reply_must_match_the_fixed_contract(self) -> None:
+        settings = replace(
+            server.SETTINGS,
+            isolation_mode=server.ISOLATION_MODE_STRONG_EXTERNAL,
+            strong_socket_path="/run/runner-strong/launcher.sock",
+            strong_token="t" * 24,
+        )
+        valid = {
+            "ok": True,
+            "capabilities": {
+                "protocol": server.STRONG_EXECUTOR_PROTOCOL,
+                "version": server.STRONG_EXECUTOR_PROTOCOL_VERSION,
+                "ready": True,
+                "runtime": "runsc",
+                "disposable": True,
+                "network": "none",
+                "readOnlyRoot": True,
+                "nonRoot": True,
+                "resourceLimits": True,
+                "imagePinned": True,
+            },
+        }
+        with patch.object(server, "_strong_socket_request", return_value=valid):
+            executor = server.StrongExternalExecutor(settings)
+            capabilities = server.runner_capabilities(settings, executor)
+        self.assertEqual(capabilities["status"], "ok")
+        self.assertEqual(capabilities["isolation"]["strength"], "strong")
+        self.assertTrue(capabilities["isolation"]["strong_verified"])
+        self.assertTrue(capabilities["capabilities"]["egress_isolation"])
+
+        invalid = {**valid, "capabilities": {**valid["capabilities"], "runtime": "runc"}}
+        with patch.object(server, "_strong_socket_request", return_value=invalid):
+            executor = server.StrongExternalExecutor(settings)
+            capabilities = server.runner_capabilities(settings, executor)
+        self.assertEqual(capabilities["status"], "not_ready")
+        self.assertFalse(capabilities["isolation"]["strong_verified"])
+
+    def test_strong_executor_sends_only_bounded_job_fields_and_never_falls_back(self) -> None:
+        settings = replace(
+            server.SETTINGS,
+            isolation_mode=server.ISOLATION_MODE_STRONG_EXTERNAL,
+            strong_socket_path="/run/runner-strong/launcher.sock",
+            strong_token="t" * 24,
+        )
+        capability = {
+            "ok": True,
+            "capabilities": {
+                "protocol": server.STRONG_EXECUTOR_PROTOCOL,
+                "version": server.STRONG_EXECUTOR_PROTOCOL_VERSION,
+                "ready": True,
+                "runtime": "runsc",
+                "disposable": True,
+                "network": "none",
+                "readOnlyRoot": True,
+                "nonRoot": True,
+                "resourceLimits": True,
+                "imagePinned": True,
+            },
+        }
+        result = {
+            "ok": True,
+            "stdout": "ok\n",
+            "stderr": "",
+            "exit_code": 0,
+            "timed_out": False,
+            "output_limited": False,
+            "duration_ms": 7,
+        }
+        with patch.object(server, "_strong_socket_request", side_effect=[capability, result]) as request:
+            executor = server.StrongExternalExecutor(settings)
+            actual = executor.execute("print(1)", "", 1000, allowed_packages=("numpy",))
+        self.assertEqual(actual["stdout"], "ok\n")
+        job_payload = request.call_args_list[1].args[1]
+        self.assertEqual(
+            set(job_payload), {"token", "code", "stdin", "timeout_ms", "allowed_packages"}
+        )
+        self.assertNotIn("image", job_payload)
+        self.assertNotIn("runtime", job_payload)
+
+    def test_strong_executor_failure_is_fail_closed(self) -> None:
+        settings = replace(
+            server.SETTINGS,
+            isolation_mode=server.ISOLATION_MODE_STRONG_EXTERNAL,
+            strong_socket_path="/run/runner-strong/launcher.sock",
+            strong_token="t" * 24,
+        )
+        with patch.object(server, "_strong_socket_request", side_effect=server.RunnerNotReady):
+            executor = server.StrongExternalExecutor(settings)
+            with self.assertRaises(server.RunnerNotReady):
+                executor.execute("print(1)", "", 1000)
+            self.assertFalse(executor.available)
+
     def test_invalid_isolation_mode_is_rejected_at_configuration(self) -> None:
         with patch.dict(os.environ, {"RUNNER_ISOLATION_MODE": "not-a-mode"}):
             with self.assertRaisesRegex(RuntimeError, "RUNNER_ISOLATION_MODE"):

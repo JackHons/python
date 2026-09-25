@@ -70,6 +70,32 @@ ISOLATION_MODE_LOCAL_PROCESS = "local_process"
 ISOLATION_MODE_STRONG_EXTERNAL = "strong_external"
 ISOLATION_MODES = frozenset({ISOLATION_MODE_LOCAL_PROCESS, ISOLATION_MODE_STRONG_EXTERNAL})
 EXECUTE_REQUEST_FIELDS = frozenset({"code", "stdin", "timeout_ms", "allowed_packages"})
+STRONG_EXECUTOR_PROTOCOL = "runner-strong-executor"
+STRONG_EXECUTOR_PROTOCOL_VERSION = 1
+STRONG_EXECUTOR_REQUIRED_CAPABILITIES = frozenset(
+    {
+        "strong_sandbox",
+        "egress_isolation",
+        "per_job_workspace",
+        "workspace_cleanup",
+        "process_tree_cleanup",
+        "resource_limits",
+    }
+)
+STRONG_CAPABILITY_FIELDS = frozenset(
+    {
+        "protocol",
+        "version",
+        "ready",
+        "runtime",
+        "disposable",
+        "network",
+        "readOnlyRoot",
+        "nonRoot",
+        "resourceLimits",
+        "imagePinned",
+    }
+)
 SECRET_ENV_NAMES = frozenset(
     {
         "RUNNER_SERVICE_TOKEN",
@@ -200,6 +226,11 @@ class Settings:
     service_token: str
     isolation_mode: str
     require_strong_isolation: bool
+    strong_socket_path: str = ""
+    strong_token: str = ""
+    strong_protocol_version: int = STRONG_EXECUTOR_PROTOCOL_VERSION
+    strong_max_reply_bytes: int = 262144
+    strong_timeout_ms: int = 6000
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -217,6 +248,14 @@ class Settings:
         service_token = os.environ.get("RUNNER_SERVICE_TOKEN", "").strip()
         if len(service_token) < 24:
             raise RuntimeError("RUNNER_SERVICE_TOKEN must contain at least 24 characters")
+        strong_socket_path = os.environ.get(
+            "RUNNER_STRONG_SOCKET_PATH",
+            os.environ.get("RUNNER_STRONG_EXECUTOR_SOCKET", ""),
+        ).strip()
+        strong_token = os.environ.get(
+            "RUNNER_STRONG_TOKEN",
+            os.environ.get("RUNNER_STRONG_EXECUTOR_TOKEN", ""),
+        ).strip()
         return cls(
             host=os.environ.get("RUNNER_HOST", "0.0.0.0"),
             port=_env_int("RUNNER_PORT", 8080),
@@ -237,6 +276,16 @@ class Settings:
             service_token=service_token,
             isolation_mode=isolation_mode,
             require_strong_isolation=require_strong_isolation,
+            strong_socket_path=strong_socket_path,
+            strong_token=strong_token,
+            strong_protocol_version=_env_int(
+                "RUNNER_STRONG_PROTOCOL_VERSION", STRONG_EXECUTOR_PROTOCOL_VERSION
+            ),
+            strong_max_reply_bytes=_env_int(
+                "RUNNER_STRONG_MAX_REPLY_BYTES",
+                _env_int("RUNNER_STRONG_REPLY_BYTES", 262144),
+            ),
+            strong_timeout_ms=_env_int("RUNNER_STRONG_TIMEOUT_MS", 6000, 250),
         )
 
 
@@ -623,12 +672,97 @@ class LocalProcessExecutor:
         )
 
 
+def _strong_socket_request(settings: Settings, payload: dict[str, Any]) -> dict[str, Any]:
+    """Send one bounded request to the host-owned launcher over Unix socket."""
+    if os.name == "nt" or not settings.strong_socket_path or not settings.strong_token:
+        raise RunnerNotReady("strong launcher is unavailable")
+    try:
+        encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    except (TypeError, ValueError, UnicodeEncodeError) as exc:
+        raise RunnerNotReady("strong launcher request is invalid") from exc
+    if len(encoded) > settings.strong_max_reply_bytes:
+        raise RunnerNotReady("strong launcher request is too large")
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+            connection.settimeout(settings.strong_timeout_ms / 1000)
+            connection.connect(settings.strong_socket_path)
+            connection.sendall(encoded + b"\n")
+            response = bytearray()
+            while b"\n" not in response:
+                chunk = connection.recv(min(8192, settings.strong_max_reply_bytes + 1 - len(response)))
+                if not chunk:
+                    break
+                response.extend(chunk)
+                if len(response) > settings.strong_max_reply_bytes:
+                    raise RunnerNotReady("strong launcher response is too large")
+    except (OSError, TimeoutError, socket.timeout) as exc:
+        raise RunnerNotReady("strong launcher is unavailable") from exc
+    line = bytes(response).split(b"\n", 1)[0]
+    if not line or len(line) > settings.strong_max_reply_bytes:
+        raise RunnerNotReady("strong launcher response is invalid")
+    try:
+        decoded = json.loads(line.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RunnerNotReady("strong launcher response is invalid") from exc
+    if not isinstance(decoded, dict):
+        raise RunnerNotReady("strong launcher response is invalid")
+    return decoded
+
+
+def _validated_strong_capabilities(reply: dict[str, Any]) -> dict[str, Any]:
+    """Validate the launcher attestation without trusting arbitrary truthy data."""
+    if reply.get("ok") is not True:
+        raise RunnerNotReady("strong launcher is unavailable")
+    capabilities = reply.get("capabilities")
+    if not isinstance(capabilities, dict) or set(capabilities) != STRONG_CAPABILITY_FIELDS:
+        raise RunnerNotReady("strong launcher capability reply is invalid")
+    if (
+        capabilities.get("protocol") != STRONG_EXECUTOR_PROTOCOL
+        or capabilities.get("version") != STRONG_EXECUTOR_PROTOCOL_VERSION
+        or capabilities.get("ready") is not True
+        or capabilities.get("runtime") != "runsc"
+        or capabilities.get("disposable") is not True
+        or capabilities.get("network") != "none"
+        or capabilities.get("readOnlyRoot") is not True
+        or capabilities.get("nonRoot") is not True
+        or capabilities.get("resourceLimits") is not True
+        or capabilities.get("imagePinned") is not True
+    ):
+        raise RunnerNotReady("strong launcher capability requirements are not met")
+    return capabilities
+
+
 class StrongExternalExecutor:
-    """Reserved adapter: no verified strong launcher is bundled in Slice A."""
+    """Bounded adapter for the host-owned trusted launcher."""
 
     mode = ISOLATION_MODE_STRONG_EXTERNAL
-    available = False
-    strong_verified = False
+
+    def __init__(self, settings: Settings | None = None) -> None:
+        self.settings = settings or SETTINGS
+        self._capabilities: dict[str, Any] | None = None
+
+    @property
+    def available(self) -> bool:
+        return self._capabilities is not None
+
+    @property
+    def strong_verified(self) -> bool:
+        return self._capabilities is not None
+
+    def refresh_capabilities(self) -> None:
+        try:
+            reply = _strong_socket_request(
+                self.settings,
+                {"op": "capabilities", "token": self.settings.strong_token},
+            )
+            self._capabilities = _validated_strong_capabilities(reply)
+        except RunnerNotReady:
+            self._capabilities = None
+
+    def _ensure_capabilities(self) -> None:
+        self.refresh_capabilities()
+        if not self.strong_verified:
+            raise RunnerNotReady("strong launcher is not verified")
 
     def execute(
         self,
@@ -639,15 +773,48 @@ class StrongExternalExecutor:
         sandbox_gid: int | None = None,
         allowed_packages: tuple[str, ...] = (),
     ) -> dict[str, Any]:
-        del code, stdin_text, timeout_ms, sandbox_uid, sandbox_gid, allowed_packages
-        raise RunnerNotReady("strong_external executor is not configured")
+        del sandbox_uid, sandbox_gid
+        self._ensure_capabilities()
+        reply = _strong_socket_request(
+            self.settings,
+            {
+                "token": self.settings.strong_token,
+                "code": code,
+                "stdin": stdin_text,
+                "timeout_ms": timeout_ms,
+                "allowed_packages": list(allowed_packages),
+            },
+        )
+        if reply.get("ok") is not True:
+            raise RunnerNotReady("strong launcher execution failed")
+        result_fields = frozenset(
+            {"ok", "stdout", "stderr", "exit_code", "timed_out", "output_limited", "duration_ms"}
+        )
+        if set(reply) != result_fields:
+            raise RunnerNotReady("strong launcher result is invalid")
+        result = {key: reply.get(key) for key in (
+            "stdout", "stderr", "exit_code", "timed_out", "output_limited", "duration_ms"
+        )}
+        if not isinstance(result["stdout"], str) or not isinstance(result["stderr"], str):
+            raise RunnerNotReady("strong launcher result is invalid")
+        if not isinstance(result["exit_code"], int) or isinstance(result["exit_code"], bool):
+            raise RunnerNotReady("strong launcher result is invalid")
+        if not isinstance(result["timed_out"], bool) or not isinstance(result["output_limited"], bool):
+            raise RunnerNotReady("strong launcher result is invalid")
+        if (
+            not isinstance(result["duration_ms"], int)
+            or isinstance(result["duration_ms"], bool)
+            or result["duration_ms"] < 0
+        ):
+            raise RunnerNotReady("strong launcher result is invalid")
+        return result
 
 
 def create_executor(settings: Settings) -> LocalProcessExecutor | StrongExternalExecutor:
     """Select exactly the configured executor; never silently fall back."""
     if settings.isolation_mode == ISOLATION_MODE_LOCAL_PROCESS:
         return LocalProcessExecutor(settings)
-    return StrongExternalExecutor()
+    return StrongExternalExecutor(settings)
 
 
 RUNNER_EXECUTOR = create_executor(SETTINGS)
@@ -659,13 +826,19 @@ def runner_capabilities(
 ) -> dict[str, Any]:
     current_settings = settings or SETTINGS
     current_executor = executor or RUNNER_EXECUTOR
+    if isinstance(current_executor, StrongExternalExecutor):
+        current_executor.refresh_capabilities()
     policy = IsolationPolicy(
         mode=current_settings.isolation_mode,
         require_strong=current_settings.require_strong_isolation,
         executor_available=current_executor.available,
         strong_executor_verified=current_executor.strong_verified,
     )
-    strength = "weak" if current_settings.isolation_mode == ISOLATION_MODE_LOCAL_PROCESS else "unverified"
+    strength = (
+        "weak"
+        if current_settings.isolation_mode == ISOLATION_MODE_LOCAL_PROCESS
+        else "strong" if current_executor.strong_verified else "unverified"
+    )
     return {
         "status": "ok" if policy.ready else "not_ready",
         "ready": policy.ready,
@@ -683,8 +856,8 @@ def runner_capabilities(
             "process_tree_cleanup": True,
             "resource_limits": True,
             "ast_capability_policy": True,
-            "network_policy": "ast_only",
-            "egress_isolation": False,
+            "network_policy": "sandbox_none" if current_executor.strong_verified else "ast_only",
+            "egress_isolation": current_executor.strong_verified,
             "strong_sandbox": policy.strong_executor_verified,
         },
     }

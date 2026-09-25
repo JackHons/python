@@ -1,0 +1,23 @@
+ARG RUNNER_JOB_BASE=python:3.12-slim-bookworm
+FROM ${RUNNER_JOB_BASE}
+
+ARG RUNNER_JOB_INSTALL=1
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /opt/runner
+
+RUN getent group 10001 >/dev/null || groupadd --gid 10001 sandbox \
+    && id -u sandbox >/dev/null 2>&1 || useradd --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin sandbox
+
+COPY requirements.txt ./
+RUN if [ "${RUNNER_JOB_INSTALL}" = "1" ]; then pip install --no-cache-dir -r requirements.txt; else python -c "import numpy, pandas, matplotlib"; fi
+
+COPY job_worker.py execution_policy.py resource_wrapper.py ./
+
+USER 10001:10001
+
+ENTRYPOINT ["python", "/opt/runner/job_worker.py"]

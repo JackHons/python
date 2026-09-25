@@ -1,0 +1,13 @@
+services:
+  runner:
+    environment:
+      # Strong mode is explicit and fail-closed. Keep normal docker-compose.yml
+      # on the weak local_process development path.
+      RUNNER_ISOLATION_MODE: strong_external
+      RUNNER_REQUIRE_STRONG_ISOLATION: "1"
+      RUNNER_STRONG_SOCKET_PATH: /run/runner-strong/launcher.sock
+      RUNNER_STRONG_TOKEN: "${RUNNER_STRONG_TOKEN:?Set RUNNER_STRONG_TOKEN (24+ chars) in .env}"
+    volumes:
+      # Only the narrow launcher socket directory crosses into the Runner.
+      # Never mount the Docker or containerd socket here.
+      - "${RUNNER_STRONG_SOCKET_DIR:-./.data/runner-strong}:/run/runner-strong:ro"

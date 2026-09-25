@@ -1,0 +1,39 @@
+[Unit]
+Description=Trusted strong runner launcher (example)
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=runner-launcher
+Group=runner-launcher
+SupplementaryGroups=docker
+EnvironmentFile=/etc/runner-strong-launcher.env
+ExecStart=/usr/bin/python3 /srv/learning-platform/scripts/runner-strong-launcher.py
+Restart=on-failure
+RestartSec=2s
+
+# The launcher owns a private Unix socket and needs only the Docker API socket.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/run/runner-strong
+
+[Install]
+WantedBy=multi-user.target
+
+# Example /etc/runner-strong-launcher.env (provide real, host-owned values):
+# RUNNER_STRONG_SOCKET=/run/runner-strong/launcher.sock
+# RUNNER_STRONG_TOKEN_FILE=/etc/runner-strong-launcher/token
+# RUNNER_STRONG_IMAGE=registry.example.invalid/runner@sha256:<64-lowercase-hex-digest>
+# RUNNER_STRONG_CONTAINER_COMMAND=["/opt/runner/strong-job"]
+#
+# The image must contain the fixed command above. It reads one JSON job from
+# stdin and emits one bounded JSON result with stdout, stderr, exit_code,
+# timed_out, and output_limited fields. Client requests cannot change Docker
+# policy, image, command, labels, mounts, identity, or resource limits.
+#
+# This is a host-service example, not evidence that Docker or runsc is
+# installed, configured, or verified on this machine. Enable only after the
+# launcher's startup checks pass on the target Linux host.

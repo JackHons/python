@@ -1,0 +1,76 @@
+Slice B integration evidence — sanitized handoff record
+Date: 2026-09-26 (Asia/Hong_Kong)
+Task: c2c_b84d, iteration 5
+Decision: SLICE_B_INTEGRATION_LOCAL_GATE_PASS; P0_OPEN
+
+Scope
+------
+The Runner HTTP broker now talks only to a narrow authenticated Unix-socket
+protocol. A host-owned trusted launcher owns the Docker/runsc policy and starts
+one disposable job container per accepted request. The normal Compose profile
+remains local_process/weak; strong mode is an explicit override.
+
+Implemented boundary
+--------------------
+- services/runner/job_worker.py: one-shot bounded JSON stdin/stdout worker.
+- services/runner/execution_policy.py: bounded job and source-policy validation.
+- services/runner/Dockerfile.job: Python 3.12 job image, fixed non-root UID,
+  numpy/pandas/matplotlib dependencies, no broker or service token.
+- scripts/runner-strong-launcher.py: fixed Docker argv, runsc, --network=none,
+  read-only root, cap drop, no-new-privileges, memory/CPU/PID/tmpfs limits,
+  non-root identity, --pull=never, stdin input, timeout cleanup and scoped
+  owner-label reaping.
+- services/runner/server.py: bounded Unix-socket client, strict capability
+  handshake, bounded replies/timeouts, sanitized fail-closed errors, and no
+  local fallback in strong mode.
+- docker-compose.strong-runner.yml: explicit strong-mode deployment override
+  mounting only the launcher socket directory, never Docker/containerd sockets.
+- scripts/runner-strong-runtime-smoke.py: black-box readiness, normal-package,
+  timeout, policy and bounded 40-job checks.
+
+Runtime target
+--------------
+- Target: user-owned Ubuntu-StrongRuntime WSL2 distro with its own Docker
+  Engine/containerd, independent of Docker Desktop's managed distro.
+- B0 runtime evidence: docs/移植交接/c2c_b84d_runner_slice_b0_linux_runtime_evidence.txt
+- runsc is registered and real runtime probes passed in B0, including
+  network-none, read-only/tmpfs, non-root, resource limits and cleanup.
+- For this local integration gate, the job image digest was
+  sha256:a0ea6b6a26b066fa77d4b356655882984abe29f4860e138af214ecfbc4879f73.
+  No token, credential, socket secret or submitted source is recorded here.
+
+Integration results
+-------------------
+- /ready: ready=true, mode=strong_external, strength=strong,
+  strong_verified=true, egress_isolation=true, strong_sandbox=true.
+- Basic stdin job through HTTP -> launcher socket -> runsc: PASS.
+- numpy job through the same path: PASS.
+- Short timeout: sanitized runner_not_ready/503 fail-closed response: PASS.
+- Blocked socket import policy: 422 rejection: PASS.
+- Real 40-job broker run with 2 bounded workers: accepted=40, busy_rejected=0,
+  p50=3903.05 ms, max=4277.87 ms, every accepted marker matched.
+- Launcher-owned container cleanup after the run: zero remaining containers.
+
+Verification commands
+---------------------
+- python -m unittest discover -s services/runner/tests -p 'test_*.py': 29/29 OK
+- python -m unittest discover -s scripts/tests -p 'test_runner_strong_launcher.py': 7/7 OK
+- python -m py_compile on changed Python modules: PASS
+- docker compose -f docker-compose.yml -f docker-compose.strong-runner.yml
+  config --quiet: PASS
+- scripts/runner-strong-runtime-smoke.py with RUNNER_SMOKE_JOBS=40: PASS
+
+Limitations and remaining gate
+------------------------------
+- Ubuntu-StrongRuntime cannot reach Docker Hub in this environment, so the
+  default Dockerfile.job base-image pull was not re-built there. The local
+  integration image was built offline from an already available equivalent
+  Python 3.12 Runner image; the committed Dockerfile default remains the
+  standard python:3.12-slim-bookworm base.
+- The broker test path rejects socket imports in the source policy. Independent
+  network-none enforcement was proven by the real runsc B0 probes; a future
+  adversarial pass should add a permitted-code network canary or equivalent
+  black-box fixture without weakening source policy.
+- This record does not close P0. Independent ChatGPT review must inspect the
+  launcher argv, socket boundary, image pinning, cleanup, adversarial results,
+  and deployment-owner acceptance on the target host.
