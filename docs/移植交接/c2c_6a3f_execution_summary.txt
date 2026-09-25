@@ -1,0 +1,20 @@
+C2C task: c2c_6a3f
+Iteration: 1
+Date: 2026-09-26 Asia/Hong_Kong
+
+Execution summary (sanitized; no credentials or raw logs):
+
+- targeted import/export/backend tests: exit 0, 11 passed, 0 failed
+- npm run test:all: exit 0, 139 tests, 137 passed, 2 PPTX fixture skips, 0 failed
+- npm run security:phase8: exit 0, 11/11 security checks passed
+- npx tsc --noEmit --pretty false: exit 0
+- npm ls --all: exit 0
+- npm audit --json: exit 1 as expected; 5 advisories total (4 moderate dev-only Drizzle tooling, 1 high production xlsx)
+- npm audit --omit=dev --json: exit 1 as expected; 1 high xlsx advisory, no upstream fix
+- npm run lint: exit 1; six existing no-useless-escape errors in scripts/migration/restore-compose.mjs
+- root production image build: exit 0, learning-platform/web:dependency-audit-final
+- converter production image build: exit 0, learning-platform/converter:dependency-audit
+- docker compose config validation: exit 0
+- git diff --check: exit 0
+
+The final dependency/build/test evidence is documented in c2c_6a3f_dependency_audit.md.
