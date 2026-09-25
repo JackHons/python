@@ -1,0 +1,50 @@
+Runner Isolation Slice B0 — Linux-owned runtime target evidence
+
+Task: c2c_b84d
+Iteration: 4
+Date: 2026-09-25
+Decision: P0_BLOCKED_ON_STRONG_RUNTIME_TARGET
+
+Scope
+-----
+Read-only inspection of possible Linux targets before any Runner Slice B
+implementation. No packages were installed, no services were reconfigured, and
+no project source was changed.
+
+Host and WSL
+------------
+- Windows 11 Home, x64.
+- WSL version 2.6.3.0; default WSL version 2.
+- `wsl -l -v` shows only the `docker-desktop` distro, running as WSL2.
+- There is no user-owned Ubuntu/Debian or other Linux distro with its own
+  Docker Engine/containerd.
+- Inside `docker-desktop`, the environment identifies as Docker Desktop's
+  managed distro; Docker CLI access to a distro-owned daemon is refused.
+- `runsc --version` in that managed environment returns permission denied. This
+  is not treated as evidence that gVisor is installed or usable.
+
+Docker Desktop managed daemon
+-----------------------------
+- Docker Desktop 4.84.0 / Engine 29.6.2, linux/amd64.
+- The Windows Docker CLI reaches the `desktop-linux` managed daemon.
+- Registered runtimes include `runc`, `io.containerd.runc.v2`, and an NVIDIA
+  runtime; `runsc` is absent.
+- The daemon's default runtime is `runc`.
+- A local `--runtime=runsc` probe already failed with
+  `unknown or invalid runtime name: runsc`.
+
+Conservative result
+-------------------
+Docker Desktop is healthy, but its managed Linux VM is not an independently
+controlled Linux-owned Docker/containerd host for this security gate. The
+current machine cannot prove a supported real gVisor/runsc runtime. Do not
+inject binaries or configuration into Docker Desktop's private VM, and do not
+implement the production StrongExternalExecutor before the runtime gate passes.
+
+Next gate
+---------
+Provision or select a supported native Linux host/VM, or a user-owned WSL2
+Linux distro running its own Docker Engine/containerd. On that target, record
+kernel/architecture, install and register gVisor through the host's supported
+mechanism, then run the real B0 probes for runsc, network-none, resource
+limits, read-only/non-root/tmpfs behavior, and cleanup. Overall P0 remains OPEN.
