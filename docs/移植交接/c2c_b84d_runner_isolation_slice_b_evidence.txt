@@ -40,3 +40,17 @@ Next gate
 On a target host with Docker Desktop or another supported daemon running, install
 and register a supported hardened runtime (preferably gVisor/runsc), then rerun
 the read-only capability gate before implementing or claiming Slice B.
+
+Follow-up check after Docker was opened
+----------------------------------------
+- Docker Server is now reachable: Docker Desktop 4.84.0, Engine 29.6.2,
+  linux/amd64.
+- Local images are available, including `ubuntu:22.04`.
+- The daemon reports `runc` (and an NVIDIA runtime) but no `runsc` runtime.
+- `runsc --version` and `where.exe runsc` still report that `runsc` is absent.
+- A no-pull negative check using the local image,
+  `docker run --rm --runtime=runsc ubuntu:22.04 ...`, fails with
+  `unknown or invalid runtime name: runsc`.
+
+The Docker daemon issue is resolved, but the hardened-runtime gate remains
+blocked. No Slice B product implementation claim is made.
