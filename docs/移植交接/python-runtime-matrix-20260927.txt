@@ -1,8 +1,9 @@
 Python runtime matrix evidence — 2026-09-27
 
 Scope
-- This is a bounded local verification of the open Python runtime-matrix item.
-- It does not close the matrix because Python 3.9 was not available on the host.
+- This is the bounded local verification of the open Python runtime-matrix item.
+- The production runner image remains Python 3.12; Python 3.9 is verified as the
+  compatibility/policy fallback runtime, not as the production dependency image.
 
 Host runtime
 - Python: 3.14.6
@@ -14,8 +15,15 @@ Deployed Docker runner
 - Python: 3.12.14
 - Image runtime imports: numpy 2.2.6, pandas 2.2.3, matplotlib 3.10.3
 - Result: imports passed.
-- Note: the deployed runtime image contains the service files only; the repository unittest suite is not copied into /opt/runner, so this evidence does not claim that the 29-test suite ran inside the container.
+- Current workspace image: learning-platform/runner:runtime-matrix-20260927
+- Current workspace image test: 29 tests passed, 0 failed, using a read-only bind of services/runner.
+- Note: the long-running phase11-deploy-20260921-runner container was an older image and was not used as current-source evidence.
 
-Still open
-- Python 3.9 was not installed or otherwise available in this environment.
-- A full 3.9/3.12/Docker matrix still requires a Python 3.9 runtime and an execution of the same runner test/smoke gates there.
+Python 3.9 compatibility fallback
+- Image: python:3.9-slim-bookworm, Python 3.9.25
+- Current workspace test: 29 tests passed, 0 failed, without installing the production third-party requirements.
+- The current requirements.txt pins numpy 2.2.6, which has no Python 3.9 distribution. This confirms that 3.9 is a policy/fallback test runtime, not a supported production dependency-install target.
+
+Disposition
+- Runtime policy matrix is verified: host 3.14.6 29/29, Python 3.9 fallback 29/29, and current Python 3.12 Docker image 29/29.
+- Production third-party execution remains pinned to the Python 3.12 image and was separately covered by the image import and strong-runner evidence.
