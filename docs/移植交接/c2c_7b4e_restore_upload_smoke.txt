@@ -1,0 +1,25 @@
+Phase 11 restore + authenticated upload persistence smoke
+status=PASS
+host=win32
+arch=amd64
+source_backup_created=true
+restore_result=pass
+migration_level=0014_gamification
+service_health=gateway/backend/web/runner healthy
+authenticated_role=admin
+upload_http=201
+uploaded_byte_count=45
+source_sha256=51ed3a885a92ef2cb74e5fef7cd68bfdf65da843ff525d229398a7d85ba71eeb
+download_http=200
+download_sha256=51ed3a885a92ef2cb74e5fef7cd68bfdf65da843ff525d229398a7d85ba71eeb
+hash_match=true
+restart_performed=true
+post_restart_metadata=true
+post_restart_download=true
+wrong_role_boundary=true
+storage_containment=true
+cleanup=true
+secrets_logged=false
+fixture_payload_logged=false
+error=none
+

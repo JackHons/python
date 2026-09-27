@@ -1,0 +1,29 @@
+C2C task: c2c_7b4e
+Scope: isolated Linux amd64 restore + authenticated file-upload persistence smoke
+
+Implementation:
+- scripts/phase11-restore-upload-smoke.mjs
+- docs/移植交接/c2c_7b4e_restore_upload_smoke.txt
+- docs/移植交接/未完成清單.md
+
+Deployment smoke: PASS
+- source backup created through the existing backend backup implementation
+- restore completed into a disposable database/storage workspace
+- restored database reached migration 0014_gamification with SQLite integrity and foreign keys valid
+- isolated Gateway/Backend/Web/Runner/Converter/Email Worker service set reached health; host architecture was amd64
+- admin-local was provisioned in the restored copy and authenticated through Gateway
+- synthetic text payload uploaded through POST /api/v1/files and released through the public API
+- original and downloaded SHA-256 matched before restart and after complete relevant-service restart
+- student access to the private library asset remained HTTP 403
+- storage containment and cleanup passed
+- secrets and fixture payload were not written to evidence
+
+Regression gates:
+- migration/material/storage targeted tests: 16 passed, 1 existing real-PPTX fixture skip, 0 failed
+- docker compose config: PASS (validation-only placeholder environment values; no secrets recorded)
+- npx tsc --noEmit: PASS
+- changed-file ESLint: PASS
+
+Boundary:
+- This synthetic upload proves storage/authenticated persistence only; it does not close the separate real PPTX conversion fixture gate.
+- Other OS/CPU targets, formal AI/SMTP configuration, authenticated browser/device/accessibility validation, and the xlsx production advisory remain separate items.
