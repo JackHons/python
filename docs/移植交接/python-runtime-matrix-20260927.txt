@@ -24,6 +24,8 @@ Deployed Docker runner
 - Live post-replacement checks: runner healthy; `/health` returned `status=ok`
   with backend/web ready; unauthenticated `/api/v1/me` returned 401; runner
   `/ready` and `/capabilities` returned the bounded local-process contract.
+- Live execution smoke: authenticated `print(2 + 3)` returned exit code 0;
+  an allowlisted `import numpy, pandas, matplotlib` job also returned exit code 0.
 
 Python 3.9 compatibility fallback
 - Image: python:3.9-slim-bookworm, Python 3.9.25
