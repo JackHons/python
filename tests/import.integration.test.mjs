@@ -32,6 +32,15 @@ test("CSV and XLSX import validate all rows before one transaction", async () =>
   const bytes = XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
   const excelRows = parseStudentImportFile("students.xlsx", bytes);
   assert.equal(excelRows[0].value.studentNumber, "S003");
+  assert.throws(
+    () => parseStudentImportFile("students.xlsx", new Uint8Array(25 * 1024 * 1024 + 1)),
+    (error) => error.code === "invalid_import" && error.status === 400,
+  );
+  const wideHeader = ["學號", "中文姓名", ...Array.from({ length: 63 }, (_, index) => `extra-${index}`)].join(",");
+  assert.throws(
+    () => parseStudentImportFile("students.csv", new TextEncoder().encode(`${wideHeader}\nS004,學生四\n`)),
+    (error) => error.code === "invalid_import" && error.status === 400,
+  );
 
   const audit = db.all("SELECT metadata_json FROM audit_logs WHERE action = 'students.imported'");
   assert.ok(audit.length >= 1);
@@ -39,4 +48,3 @@ test("CSV and XLSX import validate all rows before one transaction", async () =>
   assert.equal(assertDatabaseIntegrity(db).integrity, "ok");
   db.close();
 });
-

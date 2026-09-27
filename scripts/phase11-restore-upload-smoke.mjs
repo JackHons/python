@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 
 const { assertDatabaseIntegrity, openLocalDatabase } = await import("../server/db.ts");
+const { BackupService } = await import("../server/backups/service.ts");
 
 const workspace = resolve(process.cwd());
 const sourceProject = process.env.SOURCE_COMPOSE_PROJECT ?? "phase11-deploy-20260921";
@@ -213,6 +214,7 @@ function composeFile({ root, port, images, sourceEnv }) {
     "    network_mode: none",
     "  email-worker:",
     `    image: ${yaml(images.emailWorker)}`,
+    "    command: [\"npm\", \"run\", \"email-worker\"]",
     "    environment:",
     "      DATABASE_PATH: /data/db/learning.sqlite",
     "      EMAIL_ENABLED: \"false\"",
@@ -258,6 +260,48 @@ async function waitForGateway(baseUrl) {
   throw new Error(`Gateway did not become healthy: ${lastError}`);
 }
 
+async function waitForAllServices(serviceNames) {
+  let lastState = "services not ready";
+  for (let attempt = 0; attempt < 120; attempt += 1) {
+    let ready = true;
+    const states = [];
+    for (const serviceName of serviceNames) {
+      const container = `${composeProject}-${serviceName}-1`;
+      try {
+        const state = docker(["inspect", "--format", "{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{end}}", container]);
+        states.push(`${serviceName}:${state}`);
+        if (state !== "running|healthy") ready = false;
+      } catch {
+        states.push(`${serviceName}:missing`);
+        ready = false;
+      }
+    }
+    lastState = states.join(",");
+    if (ready) return;
+    await new Promise((resolveWait) => setTimeout(resolveWait, 1000));
+  }
+  throw new Error(`Not all isolated deployment services became healthy: ${lastState}`);
+}
+
+async function createSnapshotBackup({ sourceDatabase, sourceStorage, sourceBackups }) {
+  const db = openLocalDatabase(sourceDatabase);
+  try {
+    const admin = db.get("SELECT id FROM users WHERE role = 'admin' AND status = 'active' ORDER BY created_at LIMIT 1");
+    if (!admin) throw new Error("No active administrator exists in the source snapshot");
+    const backups = new BackupService(db, {
+      databasePath: sourceDatabase,
+      sourceStorageRoot: sourceStorage,
+      backupRoot: sourceBackups,
+      enabled: true,
+    });
+    const record = await backups.create({ id: admin.id, role: "admin" }, { trigger: "manual", scope: "full" });
+    assert.equal(record.status, "verified");
+    return record;
+  } finally {
+    db.close();
+  }
+}
+
 function cookieOf(response) {
   return response.headers.get("set-cookie")?.split(";", 1)[0] ?? "";
 }
@@ -299,6 +343,8 @@ function sanitizedReport(report) {
     `status=${report.status}`,
     `host=${report.host ?? "unknown"}`,
     `arch=${report.arch ?? "unknown"}`,
+    `source_volume_snapshot=${report.sourceVolumeSnapshot === true}`,
+    `live_backup_mutation=${report.liveBackupMutation === true}`,
     `source_backup_created=${report.sourceBackupCreated === true}`,
     `restore_result=${report.restoreResult ?? "not-run"}`,
     `migration_level=${report.migrationLevel ?? "unknown"}`,
@@ -323,7 +369,7 @@ function sanitizedReport(report) {
   ].join("\n");
 }
 
-const report = { status: "BLOCKED", sourceBackupCreated: false, restartPerformed: false, cleanup: false };
+const report = { status: "BLOCKED", sourceVolumeSnapshot: false, liveBackupMutation: false, sourceBackupCreated: false, restartPerformed: false, cleanup: false };
 let root;
 let composePath;
 let composeStarted = false;
@@ -331,7 +377,7 @@ let composeArgs;
 
 try {
   root = await mkdtemp(join(tmpdir(), "phase11-restore-upload-"));
-  await Promise.all(["db", "storage", "exports", "backups"].map((name) => mkdir(join(root, name), { recursive: true })));
+  await Promise.all(["db", "storage", "exports", "backups", "source-db", "source-storage", "source-exports", "source-backups"].map((name) => mkdir(join(root, name), { recursive: true })));
   report.host = process.platform;
   report.arch = docker(["info", "--format", "{{.Architecture}}"]).replace(/^x86_64$/, "amd64");
 
@@ -340,25 +386,42 @@ try {
   const runnerEnv = inspectEnv(sourceServices.runner);
   sourceEnv.PYTHON_RUNNER_TOKEN ??= runnerEnv.RUNNER_SERVICE_TOKEN;
 
-  const backupOutput = docker(["exec", "-e", "BACKUP_ENABLED=true", sourceServices.backend, "node", "--experimental-strip-types", "scripts/backup-host.mjs"]);
-  const backup = parseJsonOutput(backupOutput);
+  const sourceDatabase = join(root, "source-db", "learning.sqlite");
+  const sourceStorage = join(root, "source-storage");
+  const sourceExports = join(root, "source-exports");
+  const sourceBackups = join(root, "source-backups");
+  docker([
+    "run", "--rm", "--volumes-from", `${sourceServices.backend}:ro`,
+    "-v", `${bindPath(join(root, "source-db"))}:/snapshot/db`,
+    "-v", `${bindPath(sourceStorage)}:/snapshot/storage`,
+    "-v", `${bindPath(sourceExports)}:/snapshot/exports`,
+    images.backend,
+    "node", "-e", "require('node:fs').cpSync('/data/db', '/snapshot/db', { recursive: true, force: true }); require('node:fs').cpSync('/data/storage', '/snapshot/storage', { recursive: true, force: true }); require('node:fs').cpSync('/data/exports', '/snapshot/exports', { recursive: true, force: true });",
+  ], { cwd: workspace });
+  report.sourceVolumeSnapshot = true;
+  report.liveBackupMutation = false;
+  const backup = await createSnapshotBackup({ sourceDatabase, sourceStorage, sourceBackups });
   assert.ok(typeof backup.id === "string" && backup.id.length > 10, "source backup did not return an id");
   report.sourceBackupCreated = true;
 
-  docker([
-    "run", "--rm", "--volumes-from", sourceServices.backend,
-    "-v", `${bindPath(join(root, "restore"))}:/restore`,
-    "-e", "DATABASE_PATH=/data/db/learning.sqlite",
-    "-e", "STORAGE_ROOT=/data/storage",
-    "-e", "EXPORT_STORAGE_ROOT=/data/exports",
-    "-e", "BACKUP_ROOT=/data/backups",
-    "-e", `BACKEND_INTERNAL_TOKEN=${sourceEnv.BACKEND_INTERNAL_TOKEN}`,
-    images.backend,
-    "node", "--experimental-strip-types", "scripts/restore-isolated.mjs", backup.id, "/restore",
-  ], { cwd: workspace });
+  const restoredRoot = join(root, "restore");
+  const restoreOutput = execFileSync(process.execPath, ["--experimental-strip-types", "scripts/restore-isolated.mjs", backup.id, restoredRoot], {
+    cwd: workspace,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      NODE_ENV: "development",
+      DATABASE_PATH: sourceDatabase,
+      STORAGE_ROOT: sourceStorage,
+      EXPORT_STORAGE_ROOT: sourceExports,
+      BACKUP_ROOT: sourceBackups,
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  parseJsonOutput(restoreOutput);
   report.restoreResult = "pass";
 
-  const restoredDatabase = join(root, "restore", "database.sqlite");
+  const restoredDatabase = join(restoredRoot, "database.sqlite");
   await stat(restoredDatabase);
   const restoredDb = openLocalDatabase(restoredDatabase);
   try {
@@ -380,20 +443,23 @@ try {
   const initialPassword = provisioned.initialPassword;
   const readyPassword = `Restore-${stamp}-Admin!`;
   await copyFile(restoredDatabase, join(root, "db", "learning.sqlite"));
-  try { await cp(join(root, "restore", "assets"), join(root, "storage", "assets"), { recursive: true, force: true }); }
-  catch (error) { if (error?.code !== "ENOENT") throw error; }
+  for (const directory of ["assets", "previews"]) {
+    try { await cp(join(restoredRoot, directory), join(root, "storage", directory), { recursive: true, force: true }); }
+    catch (error) { if (error?.code !== "ENOENT") throw error; }
+  }
 
   const port = Number(process.env.SMOKE_PORT ?? await freePort());
   composePath = join(root, "compose.yml");
   await writeFile(composePath, composeFile({ root, port, images, sourceEnv }), { mode: 0o600 });
   composeArgs = ["compose", "-p", composeProject, "-f", composePath];
   docker([...composeArgs, "config", "--quiet"]);
-  docker([...composeArgs, "up", "-d", "--no-build"]);
   composeStarted = true;
+  docker([...composeArgs, "up", "-d", "--no-build"]);
 
   const baseUrl = `http://127.0.0.1:${port}`;
+  await waitForAllServices(["runner", "backend", "web", "gateway", "converter", "email-worker"]);
   await waitForGateway(baseUrl);
-  report.serviceHealth = "gateway/backend/web/runner healthy";
+  report.serviceHealth = "runner/backend/web/gateway/converter/email-worker healthy";
 
   const adminCookie = await firstLogin(baseUrl, "admin-local", initialPassword, readyPassword);
   const me = await api(baseUrl, "/me", { cookie: adminCookie });
@@ -436,6 +502,7 @@ try {
 
   docker([...composeArgs, "restart", "runner", "backend", "web", "gateway", "converter", "email-worker"]);
   report.restartPerformed = true;
+  await waitForAllServices(["runner", "backend", "web", "gateway", "converter", "email-worker"]);
   await waitForGateway(baseUrl);
   const adminAfterRestart = await login(baseUrl, "admin-local", readyPassword);
   const postList = await api(baseUrl, "/files?scope=available", { cookie: adminAfterRestart });

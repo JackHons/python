@@ -3,20 +3,44 @@ Scope: isolated Linux amd64 restore + authenticated file-upload persistence smok
 
 Implementation:
 - scripts/phase11-restore-upload-smoke.mjs
+- scripts/phase11-pptx-conversion-smoke.mjs
+- server/backups/service.ts
+- server/education.ts
+- app/page.tsx
 - docs/移植交接/c2c_7b4e_restore_upload_smoke.txt
+- docs/移植交接/c2c_7b4e_pptx_conversion_smoke.txt
 - docs/移植交接/未完成清單.md
 
 Deployment smoke: PASS
-- source backup created through the existing backend backup implementation
+- source Docker volumes copied read-only into a task-owned snapshot; backup and audit rows were created only in that snapshot, with no live backup mutation
 - restore completed into a disposable database/storage workspace
 - restored database reached migration 0014_gamification with SQLite integrity and foreign keys valid
-- isolated Gateway/Backend/Web/Runner/Converter/Email Worker service set reached health; host architecture was amd64
+- isolated Gateway/Backend/Web/Runner/Converter/Email Worker service set each reached health; host architecture was amd64
 - admin-local was provisioned in the restored copy and authenticated through Gateway
 - synthetic text payload uploaded through POST /api/v1/files and released through the public API
 - original and downloaded SHA-256 matched before restart and after complete relevant-service restart
 - student access to the private library asset remained HTTP 403
 - storage containment and cleanup passed
 - secrets and fixture payload were not written to evidence
+
+Browser/device smoke: PASS
+- real in-app browser sessions completed administrator (9), teacher (11), and student (7) navigation routes
+- student deep routes loaded through the browser; mobile 390x844, tablet 768x1024, and desktop 1440x900 had no horizontal overflow
+- mobile keyboard Tab produced a visible focus outline and Enter navigated to the notification route
+
+Real PPTX conversion: PASS
+- approved workspace fixture was converted by the production converter image `phase11-deploy-20260921-converter`
+- conversion produced 16 pages, a `%PDF-` preview and a valid PNG first slide
+- student preview authorization, outsider denial, source hash preservation, and ephemeral worker cleanup passed
+
+xlsx exception handling:
+- production `xlsx@0.18.5` remains an upstream high advisory exception; no unsafe replacement or force downgrade was introduced
+- server and browser import paths now enforce 25 MiB, 10,000-row and 64-column bounds and disable unneeded workbook parsing features
+
+Formal AI configuration: PASS
+- DeepSeek is configured as the single active OpenAI-compatible provider using `deepseek-chat` at `https://api.deepseek.com/chat/completions`
+- the key is encrypted at rest and not returned or written to evidence; conversation saving is disabled for this synthetic validation
+- a real non-sensitive health prompt completed successfully through the backend
 
 Regression gates:
 - migration/material/storage targeted tests: 16 passed, 1 existing real-PPTX fixture skip, 0 failed
@@ -26,4 +50,4 @@ Regression gates:
 
 Boundary:
 - This synthetic upload proves storage/authenticated persistence only; it does not close the separate real PPTX conversion fixture gate.
-- Other OS/CPU targets, formal AI/SMTP configuration, authenticated browser/device/accessibility validation, and the xlsx production advisory remain separate items.
+- SMTP remains the only uncompleted formal configuration item because no real SMTP host, account, password, sender domain, and TLS mode were supplied. Broader 40-page accessibility coverage and other OS/CPU targets remain separate items.

@@ -1,0 +1,15 @@
+Phase 11 real PPTX converter-container smoke
+status=PASS
+fixture_available=true
+source_sha256=1d9ef8a46d0672c59eca58b44d9cd3b54dd3e9a0cf34f8e98d686e8817805384
+converter_image=phase11-deploy-20260921-converter
+conversion_status=succeeded
+page_count=16
+pdf_magic=%PDF-
+first_slide_png=true
+student_preview_authorized=true
+outsider_denied=true
+source_unchanged=true
+worker_cleanup=true
+secrets_logged=false
+error=none

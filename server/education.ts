@@ -45,6 +45,9 @@ export type StudentImportError = { row: number; field?: string; code: string; me
 const SESSION_TTL_MS = 8 * 60 * 60 * 1000;
 const LOCK_DURATION_MS = 15 * 60 * 1000;
 const MAX_LOGIN_FAILURES = 5;
+const MAX_IMPORT_FILE_BYTES = 25 * 1024 * 1024;
+const MAX_IMPORT_ROWS = 10_000;
+const MAX_IMPORT_COLUMNS = 64;
 
 function nowIso(clock: () => Date) {
   return clock().toISOString().replace("T", " ").replace(".000Z", "");
@@ -99,6 +102,12 @@ function rowsToImport(rows: unknown[][]) {
   if (!header || header.length === 0) {
     throw new DomainError("invalid_import", "Import file must contain a header row");
   }
+  if (header.length > MAX_IMPORT_COLUMNS || body.some((row) => row.length > MAX_IMPORT_COLUMNS)) {
+    throw new DomainError("invalid_import", `Import supports at most ${MAX_IMPORT_COLUMNS} columns`);
+  }
+  if (body.length > MAX_IMPORT_ROWS) {
+    throw new DomainError("invalid_import", `Import supports at most ${MAX_IMPORT_ROWS} rows`);
+  }
   const mapped = header.map((value) => IMPORT_FIELDS[normaliseHeader(value)]);
   if (!mapped.includes("studentNumber") || !mapped.includes("chineseName")) {
     throw new DomainError("invalid_import", "Import requires student number and Chinese name columns");
@@ -152,12 +161,15 @@ function parseCsvRows(text: string) {
 }
 
 export function parseStudentImportFile(filename: string, bytes: Uint8Array) {
+  if (bytes.byteLength > MAX_IMPORT_FILE_BYTES) {
+    throw new DomainError("invalid_import", "Import file exceeds the 25 MiB safety limit");
+  }
   const lower = filename.toLowerCase();
   if (lower.endsWith(".csv") || lower.endsWith(".tsv")) {
     return rowsToImport(parseCsvRows(new TextDecoder("utf-8", { fatal: false }).decode(bytes)));
   }
   if (lower.endsWith(".xlsx") || lower.endsWith(".xls")) {
-    const workbook = XLSX.read(Buffer.from(bytes), { type: "buffer", cellDates: false });
+    const workbook = XLSX.read(Buffer.from(bytes), { type: "buffer", cellDates: false, cellFormula: false, cellNF: false, cellStyles: false, bookDeps: false, bookFiles: false, bookVBA: false, WTF: false });
     const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
     if (!firstSheet) throw new DomainError("invalid_import", "Excel file does not contain a worksheet");
     return rowsToImport(XLSX.utils.sheet_to_json<unknown[]>(firstSheet, { header: 1, defval: "" }));

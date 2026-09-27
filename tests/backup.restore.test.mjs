@@ -21,6 +21,11 @@ test("backup switch, manifest/checksum and isolated restore are exercised on a f
     const admin = { id: adminResult.user.id, role: "admin" };
     await mkdir(join(assetsRoot, "assets"), { recursive: true });
     await writeFile(join(assetsRoot, "assets", "ready.bin"), Buffer.from("ready asset"));
+    await mkdir(join(assetsRoot, "previews", "11111111-1111-1111-1111-111111111111"), { recursive: true });
+    await writeFile(
+      join(assetsRoot, "previews", "11111111-1111-1111-1111-111111111111", "slide-1.png"),
+      Buffer.from("preview asset"),
+    );
     await mkdir(join(assetsRoot, "quarantine"), { recursive: true });
     await writeFile(join(assetsRoot, "quarantine", "should-not-backup.upload"), Buffer.from("secret temp"));
     const backups = new BackupService(db, { databasePath, sourceStorageRoot: assetsRoot, backupRoot, enabled: false, retentionDays: 1 });
@@ -37,6 +42,10 @@ test("backup switch, manifest/checksum and isolated restore are exercised on a f
     assert.equal(restoredDb.get("SELECT COUNT(*) AS count FROM users").count, 1);
     restoredDb.close();
     assert.equal((await readFile(join(restoreRoot, "assets", "ready.bin"))).toString(), "ready asset");
+    assert.equal(
+      (await readFile(join(restoreRoot, "previews", "11111111-1111-1111-1111-111111111111", "slide-1.png"))).toString(),
+      "preview asset",
+    );
     await assert.rejects(() => backups.restore(admin, record.id, databasePath), { code: "restore_target_current_db" });
   } finally {
     db.close();
