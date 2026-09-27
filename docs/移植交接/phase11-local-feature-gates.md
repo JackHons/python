@@ -28,6 +28,15 @@ npm run test:all                       PASS (132 passed, 0 failed, 2 skipped, 13
 ## 剩餘風險
 
 - Runner 仍不是公網／高風險考試所需的 disposable 強隔離沙箱。
-- 正式 AI provider、SMTP vendor/domain/TLS、真實 PPTX fixture、Python runtime matrix、其他 OS/CPU 尚未在此環境完成。
+- 正式 AI provider、SMTP vendor/domain/TLS、真實 PPTX fixture、其他 OS/CPU 尚未在此環境完成。
 - 完整瀏覽器、裝置、鍵盤／無障礙與 40 真分頁驗證尚未完成；考試切頁事件目前只能提供 server-side policy 與稽核資料。
 - 程式相似度的閾值、誤報處理與資料保留政策仍需由學校確認。
+
+## 2026-09-27 runtime matrix addendum
+
+Python runtime policy matrix was subsequently rerun from the current workspace:
+host Python 3.14.6, a Python 3.9.25 fallback container, and a freshly rebuilt
+Python 3.12 Docker runner image each passed the current 29-test runner suite.
+The production dependency image remains Python 3.12 because the pinned
+`numpy==2.2.6` has no Python 3.9 distribution. Evidence is recorded in
+`docs/移植交接/python-runtime-matrix-20260927.txt`.
