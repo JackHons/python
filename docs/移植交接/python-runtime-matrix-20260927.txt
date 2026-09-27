@@ -18,6 +18,12 @@ Deployed Docker runner
 - Current workspace image: learning-platform/runner:runtime-matrix-20260927
 - Current workspace image test: 29 tests passed, 0 failed, using a read-only bind of services/runner.
 - Note: the long-running phase11-deploy-20260921-runner container was an older image and was not used as current-source evidence.
+- The running local deployment was then rebuilt from the current workspace and the
+  runner service was replaced without changing database volumes:
+  `phase11-deploy-20260921-runner@sha256:d67ecf685bdd1b0300f24924fe78b9f496b745eae51f9f16e53bb0ab458c0580`.
+- Live post-replacement checks: runner healthy; `/health` returned `status=ok`
+  with backend/web ready; unauthenticated `/api/v1/me` returned 401; runner
+  `/ready` and `/capabilities` returned the bounded local-process contract.
 
 Python 3.9 compatibility fallback
 - Image: python:3.9-slim-bookworm, Python 3.9.25

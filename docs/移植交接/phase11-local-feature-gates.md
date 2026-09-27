@@ -39,4 +39,5 @@ host Python 3.14.6, a Python 3.9.25 fallback container, and a freshly rebuilt
 Python 3.12 Docker runner image each passed the current 29-test runner suite.
 The production dependency image remains Python 3.12 because the pinned
 `numpy==2.2.6` has no Python 3.9 distribution. Evidence is recorded in
-`docs/移植交接/python-runtime-matrix-20260927.txt`.
+`docs/移植交接/python-runtime-matrix-20260927.txt`; the local Compose runner
+was rebuilt from the current workspace and passed live health/capability checks.
