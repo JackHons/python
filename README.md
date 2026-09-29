@@ -25,6 +25,14 @@ docker compose up -d
 sh scripts/smoke-test-compose.sh
 ```
 
+若 Docker Engine 是在 Windows 的 `Ubuntu-StrongRuntime` WSL 中執行，而 Windows 沒有自動把 WSL port 轉到 `localhost`，可在 Windows 啟動只綁定 `127.0.0.1:3000` 的轉發器：
+
+```powershell
+node scripts/windows-local-forwarder.mjs
+```
+
+轉發器會按每個連線重新解析 WSL 位址，不需要系統管理員權限，也不會對外網路介面開放服務。
+
 `create-local-env.mjs` 產生的是本地純 HTTP 測試設定，會明確寫入 `SESSION_COOKIE_SECURE=false` 以讓瀏覽器保存 session；正式環境或 HTTPS 入口請改用 `SESSION_COOKIE_SECURE=true`。
 
 `docker compose down` 預設不刪除 volumes。若要進行破壞性清理，必須由管理員明確執行 `docker compose down -v` 並先保存備份。

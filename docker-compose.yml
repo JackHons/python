@@ -66,9 +66,9 @@ services:
     read_only: true
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=128m,mode=1777
-      - /home/node/.config:rw,nosuid,nodev,size=16m
-      - /app/dist/server/.wrangler:rw,nosuid,nodev,size=64m
-      - /app/node_modules/.mf:rw,nosuid,nodev,size=64m
+      - /home/node/.config:rw,nosuid,nodev,size=16m,uid=1000,gid=1000,mode=700
+      - /app/dist/server/.wrangler:rw,nosuid,nodev,size=64m,uid=1000,gid=1000,mode=700
+      - /app/node_modules/.mf:rw,nosuid,nodev,size=64m,uid=1000,gid=1000,mode=700
     pids_limit: 256
     mem_limit: 1g
     cpus: 2.0
