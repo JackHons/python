@@ -51,6 +51,13 @@ services:
     environment:
       NODE_ENV: production
       ALLOW_LEGACY_RUN: "false"
+      RUNNER_SERVICE_TOKEN: "${RUNNER_SERVICE_TOKEN:?Set RUNNER_SERVICE_TOKEN (24+ chars) in .env}"
+      WRANGLER_WRITE_LOGS: "false"
+      WRANGLER_LOG_PATH: /tmp/wrangler.log
+      MINIFLARE_CACHE_DIR: /tmp/miniflare
+      MINIFLARE_REGISTRY_PATH: /tmp/miniflare/registry
+      HOME: /tmp/home
+      XDG_CONFIG_HOME: /tmp/config
     depends_on:
       backend:
         condition: service_healthy
@@ -59,6 +66,9 @@ services:
     read_only: true
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=128m,mode=1777
+      - /home/node/.config:rw,nosuid,nodev,size=16m
+      - /app/dist/server/.wrangler:rw,nosuid,nodev,size=64m
+      - /app/node_modules/.mf:rw,nosuid,nodev,size=64m
     pids_limit: 256
     mem_limit: 1g
     cpus: 2.0

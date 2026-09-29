@@ -22,4 +22,4 @@ RUN mkdir -p /data/db /data/storage /data/exports /data/backups \
 USER node
 EXPOSE 3000
 
-CMD ["npm", "run", "start", "--", "--hostname", "0.0.0.0", "--port", "3000"]
+CMD ["sh", "-c", "exec /app/node_modules/.bin/wrangler dev --config dist/server/wrangler.json --ip 0.0.0.0 --port 3000 --var PYTHON_RUNNER_TOKEN:$RUNNER_SERVICE_TOKEN"]
